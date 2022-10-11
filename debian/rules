@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+# force doc build to be in English
+export LC_ALL=C.UTF-8
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build -- package
+	dh_auto_build -- javadoc:javadoc
+	# defang package-contains-ancient-file
+	touch README.md
+
+override_dh_gencontrol:
+	# the resulting .jar embeds classes from libscram-java. Note the version in Built-Using
+	dh_gencontrol -- -VbuiltUsing='libscram-java (= $(shell dpkg-query --show --showformat '$${Version}' libscram-java))'

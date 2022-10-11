@@ -1,0 +1,3 @@
+Depends: @, postgresql (>= 10), sqlline
+Tests: sqlline
+Restrictions: allow-stderr

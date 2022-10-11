@@ -1,0 +1,60 @@
+Source: libpgjava
+Section: java
+Priority: optional
+Maintainer: Debian Java Maintainers <pkg-java-maintainers@lists.alioth.debian.org>
+Uploaders:
+ Debian PostgreSQL Maintainers <team+postgresql@tracker.debian.org>,
+ Christoph Berg <myon@debian.org>,
+ Matthias Klose <doko@ubuntu.com>,
+ Andrew Ross <ubuntu@rossfamily.co.uk>
+Build-Depends:
+ debhelper-compat (= 13),
+ libbuild-helper-maven-plugin-java,
+ libcomment-preprocessor-java,
+ libmaven-bundle-plugin-java,
+ libmaven-javadoc-plugin-java,
+ libmaven-shade-plugin-java,
+ libproperties-maven-plugin-java,
+ libscram-java (>= 2.1),
+ maven-debian-helper
+Build-Depends-Indep:
+ default-jdk,
+ default-jdk-doc,
+ libxerces2-java
+Standards-Version: 4.5.0
+Vcs-Git: https://salsa.debian.org/java-team/libpostgresql-jdbc-java.git
+Vcs-Browser: https://salsa.debian.org/java-team/libpostgresql-jdbc-java
+Homepage: https://jdbc.postgresql.org/
+
+Package: libpostgresql-jdbc-java
+Architecture: all
+Multi-Arch: foreign
+Depends: ${maven:Depends}, ${misc:Depends}
+# No "Recommends: ${maven:OptionalDepends}" here because that would point at
+# libscram-java which we bundle
+Conflicts: libpgjava (<= 7.4.7-3), libpg-java (<= 9.1-901-1)
+Provides: libpgjava, libpg-java
+Replaces: libpgjava, libpg-java (<= 9.1-901-1)
+Built-Using: ${builtUsing}
+Description: Java database (JDBC) driver for PostgreSQL
+ PostgreSQL JDBC Driver allows Java programs to connect to a PostgreSQL
+ database (8.4 or later) using standard, database independent Java code.
+ It is an open source JDBC driver written in Pure Java (Type 4), and
+ communicates in the PostgreSQL native network protocol.
+
+Package: libpostgresql-jdbc-java-doc
+Section: doc
+Architecture: all
+Multi-Arch: foreign
+Depends: ${maven:DocDepends}, ${misc:Depends}
+Recommends: ${maven:DocOptionalDepends}
+Conflicts: libpg-java-doc (<= 8.4-702-1)
+Provides: libpg-java-doc
+Replaces: libpg-java-doc
+Description: Java database (JDBC) driver for PostgreSQL (documentation)
+ PostgreSQL JDBC Driver allows Java programs to connect to a PostgreSQL
+ database (8.4 or later) using standard, database independent Java code.
+ It is an open source JDBC driver written in Pure Java (Type 4), and
+ communicates in the PostgreSQL native network protocol.
+ .
+ This package contains the documentation.

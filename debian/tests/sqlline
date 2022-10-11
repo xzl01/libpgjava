@@ -1,0 +1,23 @@
+#!/bin/sh
+
+trap 'rm -f sqlline.out' 0 2 3 15
+
+set -eux
+
+: Testing md5 connection
+
+pg_virtualenv <<'EOF'
+	set -eux
+	URL="jdbc:postgresql://$PGHOST:$PGPORT/$PGDATABASE?user=$PGUSER&password=$PGPASSWORD"
+	echo 'SELECT 3*3*3607*3803;' | sqlline -u $URL 2>&1 | tee sqlline.out
+	grep '123456789' sqlline.out
+EOF
+
+: Testing scram-sha-256 connection
+
+pg_virtualenv -i --auth-host=scram-sha-256 <<'EOF'
+	set -eux
+	URL="jdbc:postgresql://$PGHOST:$PGPORT/$PGDATABASE?user=$PGUSER&password=$PGPASSWORD"
+	echo 'SELECT 3*3*17*17*379721;' | sqlline -u $URL 2>&1 | tee sqlline.out
+	grep '987654321' sqlline.out
+EOF

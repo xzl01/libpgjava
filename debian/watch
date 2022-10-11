@@ -1,0 +1,2 @@
+version=4
+https://repo1.maven.org/maven2/org/postgresql/postgresql/(\d[\d.]+)/postgresql-([\d.]+)-jdbc-src.tar.gz

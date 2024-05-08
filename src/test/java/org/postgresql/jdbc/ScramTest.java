@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import org.postgresql.PGProperty;
 import org.postgresql.core.ServerVersion;
 import org.postgresql.test.TestUtil;
 import org.postgresql.util.PSQLState;
@@ -37,13 +38,13 @@ class ScramTest {
   private static final String ROLE_NAME = "testscram";
 
   @BeforeAll
-  public static void setUp() throws Exception {
+  static void setUp() throws Exception {
     con = TestUtil.openPrivilegedDB();
     assumeTrue(TestUtil.haveMinimumServerVersion(con, ServerVersion.v10));
   }
 
   @AfterAll
-  public static void tearDown() throws Exception {
+  static void tearDown() throws Exception {
     try (Statement stmt = con.createStatement()) {
       stmt.execute("DROP ROLE IF EXISTS " + ROLE_NAME);
     }
@@ -59,12 +60,12 @@ class ScramTest {
   @ParameterizedTest
   @ValueSource(strings = {"My Space", "$ec ret", " rover june spelling ",
       "!zj5hs*k5 STj@DaRUy", "q\u00A0w\u2000e\u2003r\u2009t\u3000y"})
-  void testPasswordWithSpace(String passwd) throws SQLException {
+  void passwordWithSpace(String passwd) throws SQLException {
     createRole(passwd); // Create role password with spaces.
 
     Properties props = new Properties();
-    props.setProperty("username", ROLE_NAME);
-    props.setProperty("password", passwd);
+    PGProperty.USER.set(props, ROLE_NAME);
+    PGProperty.PASSWORD.set(props, passwd);
 
     try (Connection c = assertDoesNotThrow(() -> TestUtil.openDB(props));
         Statement stmt = c.createStatement();
@@ -83,7 +84,7 @@ class ScramTest {
   @ParameterizedTest
   @ValueSource(strings = {"My Space", "$ec ret", "rover june spelling",
       "!zj5hs*k5 STj@DaRUy", "q\u00A0w\u2000e\u2003r\u2009t\u3000y"})
-  void testPasswordWithoutSpace(String passwd) throws SQLException {
+  void passwordWithoutSpace(String passwd) throws SQLException {
     String passwdNoSpaces = passwd.codePoints()
         .filter(i -> !Character.isSpaceChar(i))
         .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
@@ -92,8 +93,8 @@ class ScramTest {
     createRole(passwdNoSpaces); // Create role password without spaces.
 
     Properties props = new Properties();
-    props.setProperty("username", ROLE_NAME);
-    props.setProperty("password", passwd); // Open connection with spaces
+    PGProperty.USER.set(props, ROLE_NAME);
+    PGProperty.PASSWORD.set(props, passwd); // Open connection with spaces
 
     SQLException ex = assertThrows(SQLException.class, () -> TestUtil.openDB(props));
     assertEquals(PSQLState.INVALID_PASSWORD.getState(), ex.getSQLState());
@@ -108,14 +109,14 @@ class ScramTest {
 
   @ParameterizedTest
   @MethodSource("provideArgsForTestInvalid")
-  void testInvalidPasswords(String password, String expectedMessage) throws SQLException {
+  void invalidPasswords(String password, String expectedMessage) throws SQLException {
     // We are testing invalid passwords so that correct one does not matter
     createRole("anything_goes_here");
 
     Properties props = new Properties();
-    props.setProperty("user", ROLE_NAME);
+    PGProperty.USER.set(props, ROLE_NAME);
     if (password != null) {
-      props.setProperty("password", password);
+      PGProperty.PASSWORD.set(props, password);
     }
     try (Connection conn = DriverManager.getConnection(TestUtil.getURL(), props)) {
       fail("SCRAM connection attempt with invalid password should fail");

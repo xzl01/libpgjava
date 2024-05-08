@@ -36,6 +36,8 @@ public class MakeSSL extends ObjectFactory {
     try {
       newConnection = (SSLSocket) factory.createSocket(stream.getSocket(),
           stream.getHostSpec().getHost(), stream.getHostSpec().getPort(), true);
+      int connectTimeoutSeconds = PGProperty.CONNECT_TIMEOUT.getInt(info);
+      newConnection.setSoTimeout(connectTimeoutSeconds * 1000);
       // We must invoke manually, otherwise the exceptions are hidden
       newConnection.setUseClientMode(true);
       newConnection.startHandshake();
@@ -51,20 +53,22 @@ public class MakeSSL extends ObjectFactory {
     if (sslMode.verifyPeerName()) {
       verifyPeerName(stream, info, newConnection);
     }
-
+    // Zero timeout (default) means infinite
+    int socketTimeout = PGProperty.SOCKET_TIMEOUT.getInt(info);
+    newConnection.setSoTimeout(socketTimeout * 1000);
     stream.changeSocket(newConnection);
   }
 
   private static void verifyPeerName(PGStream stream, Properties info, SSLSocket newConnection)
       throws PSQLException {
     HostnameVerifier hvn;
-    String sslhostnameverifier = PGProperty.SSL_HOSTNAME_VERIFIER.get(info);
+    String sslhostnameverifier = PGProperty.SSL_HOSTNAME_VERIFIER.getOrDefault(info);
     if (sslhostnameverifier == null) {
       hvn = PGjdbcHostnameVerifier.INSTANCE;
       sslhostnameverifier = "PgjdbcHostnameVerifier";
     } else {
       try {
-        hvn = (HostnameVerifier) instantiate(sslhostnameverifier, info, false, null);
+        hvn = instantiate(HostnameVerifier.class, sslhostnameverifier, info, false, null);
       } catch (Exception e) {
         throw new PSQLException(
             GT.tr("The HostnameVerifier class provided {0} could not be instantiated.",

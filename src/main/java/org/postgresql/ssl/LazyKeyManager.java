@@ -48,13 +48,13 @@ import javax.security.auth.x500.X500Principal;
  * A Key manager that only loads the keys, if necessary.
  */
 public class LazyKeyManager implements X509KeyManager {
-  private X509Certificate /* @Nullable */ [] cert = null;
-  private /* @Nullable */ PrivateKey key = null;
+  private X509Certificate /* @Nullable */ [] cert;
+  private /* @Nullable */ PrivateKey key;
   private final /* @Nullable */ String certfile;
   private final /* @Nullable */ String keyfile;
   private final CallbackHandler cbh;
   private final boolean defaultfile;
-  private /* @Nullable */ PSQLException error = null;
+  private /* @Nullable */ PSQLException error;
 
   /**
    * Constructor. certfile and keyfile can be null, in that case no certificate is presented to the
@@ -73,7 +73,7 @@ public class LazyKeyManager implements X509KeyManager {
   }
 
   /**
-   * getCertificateChain and getPrivateKey cannot throw exeptions, therefore any exception is stored
+   * getCertificateChain and getPrivateKey cannot throw exceptions, therefore any exception is stored
    * in {@link #error} and can be raised by this method.
    *
    * @throws PSQLException if any exception is stored in {@link #error} and can be raised
@@ -102,14 +102,30 @@ public class LazyKeyManager implements X509KeyManager {
         if (certchain == null) {
           return null;
         } else {
-          X500Principal ourissuer = certchain[certchain.length - 1].getIssuerX500Principal();
+          X509Certificate cert = certchain[certchain.length - 1];
+          X500Principal ourissuer = cert.getIssuerX500Principal();
+          String certKeyType = cert.getPublicKey().getAlgorithm();
+          boolean keyTypeFound = false;
           boolean found = false;
-          for (Principal issuer : issuers) {
-            if (ourissuer.equals(issuer)) {
-              found = true;
+          if (keyType != null && keyType.length > 0) {
+            for (String kt : keyType) {
+              if (kt.equalsIgnoreCase(certKeyType)) {
+                keyTypeFound = true;
+              }
+            }
+          } else {
+            // If no key types were passed in, assume we don't care
+            // about checking that the cert uses a particular key type.
+            keyTypeFound = true;
+          }
+          if (keyTypeFound) {
+            for (Principal issuer : issuers) {
+              if (ourissuer.equals(issuer)) {
+                found = keyTypeFound;
+              }
             }
           }
-          return (found ? "user" : null);
+          return found ? "user" : null;
         }
       }
     }
@@ -175,7 +191,7 @@ public class LazyKeyManager implements X509KeyManager {
   public String /* @Nullable */ [] getClientAliases(String keyType,
       Principal /* @Nullable */ [] issuers) {
     String alias = chooseClientAlias(new String[]{keyType}, issuers, (Socket) null);
-    return (alias == null ? new String[]{} : new String[]{alias});
+    return alias == null ? new String[]{} : new String[]{alias};
   }
 
   private static byte[] readFileFully(String path) throws IOException {
@@ -253,7 +269,7 @@ public class LazyKeyManager implements X509KeyManager {
             // Extract the iteration count and the salt
             AlgorithmParameters algParams = ePKInfo.getAlgParameters();
             cipher.init(Cipher.DECRYPT_MODE, pbeKey, algParams);
-            // Decrypt the encryped private key into a PKCS8EncodedKeySpec
+            // Decrypt the encrypted private key into a PKCS8EncodedKeySpec
             KeySpec pkcs8KeySpec = ePKInfo.getKeySpec(cipher);
             key = kf.generatePrivate(pkcs8KeySpec);
           } catch (GeneralSecurityException ikex) {

@@ -10,6 +10,8 @@ import org.postgresql.jdbc.FieldMetadata;
 // import org.checkerframework.checker.nullness.qual.Nullable;
 // import org.checkerframework.dataflow.qual.Pure;
 
+import java.util.Locale;
+
 public class Field {
   // The V3 protocol defines two constants for the format of data
   public static final int TEXT_FORMAT = 0;
@@ -143,6 +145,7 @@ public class Field {
     this.metadata = metadata;
   }
 
+  @Override
   public String toString() {
     return "Field(" + (columnLabel != null ? columnLabel : "")
         + "," + Oid.toString(oid)
@@ -172,6 +175,6 @@ public class Field {
   }
 
   public void upperCaseLabel() {
-    columnLabel = columnLabel.toUpperCase();
+    columnLabel = columnLabel.toUpperCase(Locale.ROOT);
   }
 }

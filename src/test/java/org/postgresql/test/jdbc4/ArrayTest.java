@@ -19,6 +19,7 @@ import org.postgresql.test.util.RegexMatcher;
 import org.postgresql.util.PGobject;
 import org.postgresql.util.PGtokenizer;
 
+import org.hamcrest.MatcherAssert;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
@@ -48,7 +49,7 @@ public class ArrayTest extends BaseTest4 {
 
   @Parameterized.Parameters(name = "binary = {0}")
   public static Iterable<Object[]> data() {
-    Collection<Object[]> ids = new ArrayList<Object[]>();
+    Collection<Object[]> ids = new ArrayList<>();
     for (BinaryMode binaryMode : BinaryMode.values()) {
       ids.add(new Object[]{binaryMode});
     }
@@ -85,7 +86,7 @@ public class ArrayTest extends BaseTest4 {
   @Test
   public void testCreateArrayOfBool() throws SQLException {
     PreparedStatement pstmt = conn.prepareStatement("SELECT ?::bool[]");
-    pstmt.setArray(1, conn.unwrap(PgConnection.class).createArrayOf("boolean", new boolean[] { true, true, false }));
+    pstmt.setArray(1, conn.unwrap(PgConnection.class).createArrayOf("boolean", new boolean[]{true, true, false}));
 
     ResultSet rs = pstmt.executeQuery();
     Assert.assertTrue(rs.next());
@@ -122,7 +123,7 @@ public class ArrayTest extends BaseTest4 {
   public void testCreateArrayOfBytes() throws SQLException {
 
     PreparedStatement pstmt = conn.prepareStatement("SELECT ?::bytea[]");
-    final byte[][] in = new byte[][] { { 0x01, (byte) 0xFF, (byte) 0x12 }, {}, { (byte) 0xAC, (byte) 0xE4 }, null };
+    final byte[][] in = new byte[][]{{0x01, (byte) 0xFF, (byte) 0x12}, {}, {(byte) 0xAC, (byte) 0xE4}, null};
     final Array createdArray = conn.createArrayOf("bytea", in);
 
     byte[][] inCopy = (byte[][]) createdArray.getArray();
@@ -159,7 +160,7 @@ public class ArrayTest extends BaseTest4 {
         ServerVersion.v9_0);
 
     PreparedStatement pstmt = conn.prepareStatement("SELECT ?::bytea[]");
-    final byte[][] in = new byte[][] { { 0x01, (byte) 0xFF, (byte) 0x12 }, {}, { (byte) 0xAC, (byte) 0xE4 }, null };
+    final byte[][] in = new byte[][]{{0x01, (byte) 0xFF, (byte) 0x12}, {}, {(byte) 0xAC, (byte) 0xE4}, null};
 
     pstmt.setString(1, "{\"\\\\x01ff12\",\"\\\\x\",\"\\\\xace4\",NULL}");
 
@@ -234,7 +235,7 @@ public class ArrayTest extends BaseTest4 {
     PGobject p2 = new PGobject();
     p2.setType("json");
     p2.setValue("{\"x\": 20}");
-    PGobject[] in = new PGobject[] { p1, p2 };
+    PGobject[] in = new PGobject[]{p1, p2};
     pstmt.setArray(1, conn.createArrayOf("json", in));
 
     ResultSet rs = pstmt.executeQuery();
@@ -398,7 +399,7 @@ public class ArrayTest extends BaseTest4 {
 
   @Test
   public void testSetObjectFromJavaArray() throws SQLException {
-    String[] strArray = new String[] { "a", "b", "c" };
+    String[] strArray = new String[]{"a", "b", "c"};
     Object[] objCopy = Arrays.copyOf(strArray, strArray.length, Object[].class);
 
     PreparedStatement pstmt = conn.prepareStatement("INSERT INTO arrtest(strarr) VALUES (?)");
@@ -616,7 +617,7 @@ public class ArrayTest extends BaseTest4 {
           actual = actual.replaceAll("\"", "");
         }
         //the string format may vary based on how data stored
-        Assert.assertThat(actual, RegexMatcher.matchesPattern("\\{3\\.5,-4\\.5,NULL,77(.0)?\\}"));
+        MatcherAssert.assertThat(actual, RegexMatcher.matchesPattern("\\{3\\.5,-4\\.5,NULL,77(.0)?\\}"));
       }
 
     } finally {
@@ -651,7 +652,7 @@ public class ArrayTest extends BaseTest4 {
 
   @Test
   public void multiDimIntArray() throws SQLException {
-    Array arr = con.createArrayOf("int4", new int[][]{{1,2}, {3,4}});
+    Array arr = con.createArrayOf("int4", new int[][]{{1, 2}, {3, 4}});
     PreparedStatement ps = con.prepareStatement("select ?::int4[][]");
     ps.setArray(1, arr);
     ResultSet rs = ps.executeQuery();
@@ -672,7 +673,7 @@ public class ArrayTest extends BaseTest4 {
 
   @Test
   public void insertAndQueryMultiDimArray() throws SQLException {
-    Array arr = con.createArrayOf("int4", new int[][] { { 1, 2 }, { 3, 4 } });
+    Array arr = con.createArrayOf("int4", new int[][]{{1, 2}, {3, 4}});
     PreparedStatement insertPs = con.prepareStatement("INSERT INTO arrtest(intarr2) VALUES (?)");
     insertPs.setArray(1, arr);
     insertPs.execute();
@@ -692,7 +693,7 @@ public class ArrayTest extends BaseTest4 {
   @Test
   public void testJsonbArray() throws  SQLException {
     Assume.assumeTrue("jsonb requires PostgreSQL 9.4+", TestUtil.haveMinimumServerVersion(con, ServerVersion.v9_4));
-    TestUtil.createTempTable(con, "jsonbarray", "jbarray jsonb[]" );
+    TestUtil.createTempTable(con, "jsonbarray", "jbarray jsonb[]");
     try (Statement stmt = con.createStatement()) {
       stmt.executeUpdate("insert into jsonbarray values( ARRAY['{\"a\":\"a\"}'::jsonb, '{\"b\":\"b\"}'::jsonb] )");
       try (ResultSet rs = stmt.executeQuery("select jbarray from jsonbarray")) {

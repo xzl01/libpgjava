@@ -38,7 +38,7 @@ import java.util.TimeZone;
 
 /*
  * Test get/setTimestamp for both timestamp with time zone and timestamp without time zone datatypes
- * TODO: refactor to a property-based testing or paremeterized testing somehow so adding new times
+ * TODO: refactor to a property-based testing or parameterized testing somehow so adding new times
  *  don't require to add constants and setters/getters. JUnit 5 would probably help here.
  */
 @RunWith(Parameterized.class)
@@ -52,7 +52,7 @@ public class TimestampTest extends BaseTest4 {
 
   @Parameterized.Parameters(name = "binary = {0}")
   public static Iterable<Object[]> data() {
-    Collection<Object[]> ids = new ArrayList<Object[]>();
+    Collection<Object[]> ids = new ArrayList<>();
     for (BinaryMode binaryMode : BinaryMode.values()) {
       ids.add(new Object[]{binaryMode});
     }
@@ -570,6 +570,28 @@ public class TimestampTest extends BaseTest4 {
 
     rs.close();
     stmt.close();
+  }
+
+  @Test
+  public void testJavaTimestampFromSQLTime() throws SQLException {
+    Statement st = con.createStatement();
+    ResultSet rs = st.executeQuery("SELECT '00:00:05.123456'::time as t, '1970-01-01 00:00:05.123456'::timestamp as ts, "
+        + "'00:00:05.123456 +0300'::time with time zone as tz, '1970-01-01 00:00:05.123456 +0300'::timestamp with time zone as tstz ");
+    rs.next();
+    Timestamp t = rs.getTimestamp("t");
+    Timestamp ts = rs.getTimestamp("ts");
+    Timestamp tz = rs.getTimestamp("tz");
+
+    Timestamp tstz = rs.getTimestamp("tstz");
+
+    Integer desiredNanos = 123456000;
+    Integer tNanos = t.getNanos();
+    Integer tzNanos = tz.getNanos();
+
+    assertEquals("Time should be microsecond-accurate", desiredNanos, tNanos);
+    assertEquals("Time with time zone should be microsecond-accurate", desiredNanos, tzNanos);
+    assertEquals("Unix epoch timestamp and Time should match", ts, t);
+    assertEquals("Unix epoch timestamp with time zone and time with time zone should match", tstz, tz);
   }
 
   private static Timestamp getTimestamp(int y, int m, int d, int h, int mn, int se, int f,

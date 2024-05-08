@@ -20,6 +20,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.TimerTask;
+import java.util.logging.Logger;
 
 /**
  * Driver-internal connection interface. Application code should not use this interface.
@@ -30,6 +31,7 @@ public interface BaseConnection extends PGConnection, Connection {
    *
    * @throws SQLException if something goes wrong.
    */
+  @Override
   void cancelQuery() throws SQLException;
 
   /**
@@ -147,10 +149,11 @@ public interface BaseConnection extends PGConnection, Connection {
   boolean getStandardConformingStrings();
 
   // Ew. Quick hack to give access to the connection-specific utils implementation.
+  @Deprecated
   TimestampUtils getTimestampUtils();
 
   // Get the per-connection logger.
-  java.util.logging.Logger getLogger();
+  Logger getLogger();
 
   // Get the bind-string-as-varchar config flag
   boolean getStringVarcharFlag();

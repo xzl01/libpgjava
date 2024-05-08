@@ -11,6 +11,7 @@ import org.postgresql.util.PSQLState;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -72,6 +73,7 @@ public class Oid {
   public static final int POINT = 600;
   public static final int POINT_ARRAY = 1017;
   public static final int BOX = 603;
+  public static final int BOX_ARRAY = 1020;
   public static final int JSONB = 3802;
   public static final int JSONB_ARRAY = 3807;
   public static final int JSON = 114;
@@ -90,14 +92,14 @@ public class Oid {
   public static final int TSVECTOR = 3614;
   public static final int TSQUERY = 3615;
 
-  private static final Map<Integer, String> OID_TO_NAME = new HashMap<Integer, String>(100);
-  private static final Map<String, Integer> NAME_TO_OID = new HashMap<String, Integer>(100);
+  private static final Map<Integer, String> OID_TO_NAME = new HashMap<>(100);
+  private static final Map<String, Integer> NAME_TO_OID = new HashMap<>(100);
 
   static {
     for (Field field : Oid.class.getFields()) {
       try {
         int oid = field.getInt(null);
-        String name = field.getName().toUpperCase();
+        String name = field.getName().toUpperCase(Locale.ROOT);
         OID_TO_NAME.put(oid, name);
         NAME_TO_OID.put(name, oid);
       } catch (IllegalAccessException e) {
@@ -125,7 +127,7 @@ public class Oid {
     if (oid.length() > 0 && !Character.isDigit(oid.charAt(0))) {
       Integer id = NAME_TO_OID.get(oid);
       if (id == null) {
-        id = NAME_TO_OID.get(oid.toUpperCase());
+        id = NAME_TO_OID.get(oid.toUpperCase(Locale.ROOT));
       }
       if (id != null) {
         return id;

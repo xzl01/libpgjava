@@ -10,6 +10,7 @@ import org.postgresql.PGProperty;
 import org.postgresql.jdbc.AutoSave;
 import org.postgresql.jdbc.EscapeSyntaxCallMode;
 import org.postgresql.jdbc.PreferQueryMode;
+import org.postgresql.jdbc.ResourceLock;
 import org.postgresql.util.HostSpec;
 import org.postgresql.util.LruCache;
 import org.postgresql.util.PSQLException;
@@ -19,6 +20,7 @@ import org.postgresql.util.ServerErrorMessage;
 // import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 // import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.sql.SQLWarning;
@@ -27,6 +29,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
+import java.util.concurrent.locks.Condition;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -40,51 +43,53 @@ public abstract class QueryExecutorBase implements QueryExecutor {
 
   private int cancelPid;
   private int cancelKey;
-  private boolean closed = false;
+  protected final QueryExecutorCloseAction closeAction;
   private /* @MonotonicNonNull */ String serverVersion;
-  private int serverVersionNum = 0;
+  private int serverVersionNum;
   private TransactionState transactionState = TransactionState.IDLE;
   private final boolean reWriteBatchedInserts;
   private final boolean columnSanitiserDisabled;
   private final EscapeSyntaxCallMode escapeSyntaxCallMode;
   private final boolean quoteReturningIdentifiers;
-  private final PreferQueryMode preferQueryMode;
+  private PreferQueryMode preferQueryMode;
   private AutoSave autoSave;
   private boolean flushCacheOnDeallocate = true;
   protected final boolean logServerErrorDetail;
 
   // default value for server versions that don't report standard_conforming_strings
-  private boolean standardConformingStrings = false;
+  private boolean standardConformingStrings;
 
   private /* @Nullable */ SQLWarning warnings;
-  private final ArrayList<PGNotification> notifications = new ArrayList<PGNotification>();
+  private final ArrayList<PGNotification> notifications = new ArrayList<>();
 
   private final LruCache<Object, CachedQuery> statementCache;
   private final CachedQueryCreateAction cachedQueryCreateAction;
 
   // For getParameterStatuses(), GUC_REPORT tracking
   private final TreeMap<String,String> parameterStatuses
-      = new TreeMap<String,String>(String.CASE_INSENSITIVE_ORDER);
+      = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 
-  @SuppressWarnings({"assignment.type.incompatible", "argument.type.incompatible"})
-  protected QueryExecutorBase(PGStream pgStream, String user,
-      String database, int cancelSignalTimeout, Properties info) throws SQLException {
+  protected final ResourceLock lock = new ResourceLock();
+  protected final Condition lockCondition = lock.newCondition();
+
+  @SuppressWarnings({"assignment", "argument", "method.invocation"})
+  protected QueryExecutorBase(PGStream pgStream, int cancelSignalTimeout, Properties info) throws SQLException {
     this.pgStream = pgStream;
-    this.user = user;
-    this.database = database;
+    this.user = PGProperty.USER.getOrDefault(info);
+    this.database = PGProperty.PG_DBNAME.getOrDefault(info);
     this.cancelSignalTimeout = cancelSignalTimeout;
     this.reWriteBatchedInserts = PGProperty.REWRITE_BATCHED_INSERTS.getBoolean(info);
     this.columnSanitiserDisabled = PGProperty.DISABLE_COLUMN_SANITISER.getBoolean(info);
-    String callMode = PGProperty.ESCAPE_SYNTAX_CALL_MODE.get(info);
+    String callMode = PGProperty.ESCAPE_SYNTAX_CALL_MODE.getOrDefault(info);
     this.escapeSyntaxCallMode = EscapeSyntaxCallMode.of(callMode);
     this.quoteReturningIdentifiers = PGProperty.QUOTE_RETURNING_IDENTIFIERS.getBoolean(info);
-    String preferMode = PGProperty.PREFER_QUERY_MODE.get(info);
+    String preferMode = PGProperty.PREFER_QUERY_MODE.getOrDefault(info);
     this.preferQueryMode = PreferQueryMode.of(preferMode);
-    this.autoSave = AutoSave.of(PGProperty.AUTOSAVE.get(info));
+    this.autoSave = AutoSave.of(PGProperty.AUTOSAVE.getOrDefault(info));
     this.logServerErrorDetail = PGProperty.LOG_SERVER_ERROR_DETAIL.getBoolean(info);
-    // assignment.type.incompatible, argument.type.incompatible
+    // assignment, argument
     this.cachedQueryCreateAction = new CachedQueryCreateAction(this);
-    statementCache = new LruCache<Object, CachedQuery>(
+    statementCache = new LruCache<>(
         Math.max(0, PGProperty.PREPARED_STATEMENT_CACHE_QUERIES.getInt(info)),
         Math.max(0, PGProperty.PREPARED_STATEMENT_CACHE_SIZE_MIB.getInt(info) * 1024L * 1024L),
         false,
@@ -95,8 +100,20 @@ public abstract class QueryExecutorBase implements QueryExecutor {
             cachedQuery.query.close();
           }
         });
+    // method.invocation
+    this.closeAction = createCloseAction();
   }
 
+  protected QueryExecutorCloseAction createCloseAction() {
+    return new QueryExecutorCloseAction(pgStream);
+  }
+
+  /**
+   * Sends "terminate connection" message to the backend.
+   * @throws IOException in case connection termination fails
+   * @deprecated use {@link #getCloseAction()} instead
+   */
+  @Deprecated
   protected abstract void sendCloseMessage() throws IOException;
 
   @Override
@@ -136,35 +153,30 @@ public abstract class QueryExecutorBase implements QueryExecutor {
 
   @Override
   public void abort() {
-    try {
-      pgStream.getSocket().close();
-    } catch (IOException e) {
-      // ignore
-    }
-    closed = true;
+    closeAction.abort();
+  }
+
+  @Override
+  public Closeable getCloseAction() {
+    return closeAction;
   }
 
   @Override
   public void close() {
-    if (closed) {
+    if (closeAction.isClosed()) {
       return;
     }
 
     try {
-      LOGGER.log(Level.FINEST, " FE=> Terminate");
-      sendCloseMessage();
-      pgStream.flush();
-      pgStream.close();
+      getCloseAction().close();
     } catch (IOException ioe) {
       LOGGER.log(Level.FINEST, "Discarding IOException on close:", ioe);
     }
-
-    closed = true;
   }
 
   @Override
   public boolean isClosed() {
-    return closed;
+    return closeAction.isClosed();
   }
 
   @Override
@@ -204,30 +216,38 @@ public abstract class QueryExecutorBase implements QueryExecutor {
     }
   }
 
-  public synchronized void addWarning(SQLWarning newWarning) {
-    if (warnings == null) {
-      warnings = newWarning;
-    } else {
-      warnings.setNextWarning(newWarning);
+  public void addWarning(SQLWarning newWarning) {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (warnings == null) {
+        warnings = newWarning;
+      } else {
+        warnings.setNextWarning(newWarning);
+      }
     }
   }
 
-  public synchronized void addNotification(PGNotification notification) {
-    notifications.add(notification);
+  public void addNotification(PGNotification notification) {
+    try (ResourceLock ignore = lock.obtain()) {
+      notifications.add(notification);
+    }
   }
 
   @Override
-  public synchronized PGNotification[] getNotifications() throws SQLException {
-    PGNotification[] array = notifications.toArray(new PGNotification[0]);
-    notifications.clear();
-    return array;
+  public PGNotification[] getNotifications() throws SQLException {
+    try (ResourceLock ignore = lock.obtain()) {
+      PGNotification[] array = notifications.toArray(new PGNotification[0]);
+      notifications.clear();
+      return array;
+    }
   }
 
   @Override
-  public synchronized /* @Nullable */ SQLWarning getWarnings() {
-    SQLWarning chain = warnings;
-    warnings = null;
-    return chain;
+  public /* @Nullable */ SQLWarning getWarnings() {
+    try (ResourceLock ignore = lock.obtain()) {
+      SQLWarning chain = warnings;
+      warnings = null;
+      return chain;
+    }
   }
 
   @Override
@@ -255,17 +275,23 @@ public abstract class QueryExecutorBase implements QueryExecutor {
     this.serverVersionNum = serverVersionNum;
   }
 
-  public synchronized void setTransactionState(TransactionState state) {
-    transactionState = state;
+  public void setTransactionState(TransactionState state) {
+    try (ResourceLock ignore = lock.obtain()) {
+      transactionState = state;
+    }
   }
 
-  public synchronized void setStandardConformingStrings(boolean value) {
-    standardConformingStrings = value;
+  public void setStandardConformingStrings(boolean value) {
+    try (ResourceLock ignore = lock.obtain()) {
+      standardConformingStrings = value;
+    }
   }
 
   @Override
-  public synchronized boolean getStandardConformingStrings() {
-    return standardConformingStrings;
+  public boolean getStandardConformingStrings() {
+    try (ResourceLock ignore = lock.obtain()) {
+      return standardConformingStrings;
+    }
   }
 
   @Override
@@ -274,8 +300,10 @@ public abstract class QueryExecutorBase implements QueryExecutor {
   }
 
   @Override
-  public synchronized TransactionState getTransactionState() {
-    return transactionState;
+  public TransactionState getTransactionState() {
+    try (ResourceLock ignore = lock.obtain()) {
+      return transactionState;
+    }
   }
 
   public void setEncoding(Encoding encoding) throws IOException {
@@ -367,10 +395,16 @@ public abstract class QueryExecutorBase implements QueryExecutor {
     return preferQueryMode;
   }
 
+  public void setPreferQueryMode(PreferQueryMode mode) {
+    preferQueryMode = mode;
+  }
+
+  @Override
   public AutoSave getAutoSave() {
     return autoSave;
   }
 
+  @Override
   public void setAutoSave(AutoSave autoSave) {
     this.autoSave = autoSave;
   }
@@ -418,16 +452,17 @@ public abstract class QueryExecutorBase implements QueryExecutor {
     return flushCacheOnDeallocate;
   }
 
+  @Override
   public void setFlushCacheOnDeallocate(boolean flushCacheOnDeallocate) {
     this.flushCacheOnDeallocate = flushCacheOnDeallocate;
   }
 
   protected boolean hasNotifications() {
-    return notifications.size() > 0;
+    return !notifications.isEmpty();
   }
 
   @Override
-  public final Map<String,String> getParameterStatuses() {
+  public final Map<String, String> getParameterStatuses() {
     return Collections.unmodifiableMap(parameterStatuses);
   }
 
@@ -457,7 +492,7 @@ public abstract class QueryExecutorBase implements QueryExecutor {
    * @see org.postgresql.PGConnection#getParameterStatus
    */
   protected void onParameterStatus(String parameterName, String parameterStatus) {
-    if (parameterName == null || parameterName.equals("")) {
+    if (parameterName == null || "".equals(parameterName)) {
       throw new IllegalStateException("attempt to set GUC_REPORT parameter with null or empty-string name");
     }
 

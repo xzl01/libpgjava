@@ -32,26 +32,29 @@ public abstract class CopyOperationImpl implements CopyOperation {
     return castNonNull(queryExecutor);
   }
 
+  @Override
   public void cancelCopy() throws SQLException {
     castNonNull(queryExecutor).cancelCopy(this);
   }
 
+  @Override
   public int getFieldCount() {
     return castNonNull(fieldFormats).length;
   }
 
+  @Override
   public int getFieldFormat(int field) {
     return castNonNull(fieldFormats)[field];
   }
 
+  @Override
   public int getFormat() {
     return rowFormat;
   }
 
+  @Override
   public boolean isActive() {
-    synchronized (castNonNull(queryExecutor)) {
-      return queryExecutor.hasLock(this);
-    }
+    return castNonNull(queryExecutor).hasLockOn(this);
   }
 
   public void handleCommandStatus(String status) throws PSQLException {
@@ -72,6 +75,7 @@ public abstract class CopyOperationImpl implements CopyOperation {
    */
   protected abstract void handleCopydata(byte[] data) throws PSQLException;
 
+  @Override
   public long getHandledRowCount() {
     return handledRowCount;
   }

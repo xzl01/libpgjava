@@ -59,7 +59,7 @@ public class PGStream implements Closeable, Flushable {
     return gssEncrypted;
   }
 
-  boolean gssEncrypted = false;
+  boolean gssEncrypted;
 
   public void setSecContext(GSSContext secContext) {
     MessageProp messageProp =  new MessageProp(0, true);
@@ -78,7 +78,7 @@ public class PGStream implements Closeable, Flushable {
   private Writer encodingWriter;
 
   private long maxResultBuffer = -1;
-  private long resultBufferByteCount = 0;
+  private long resultBufferByteCount;
 
   private int maxRowSizeBytes = -1;
 
@@ -90,7 +90,7 @@ public class PGStream implements Closeable, Flushable {
    * @param timeout timeout in milliseconds, or 0 if no timeout set
    * @throws IOException if an IOException occurs below it.
    */
-  @SuppressWarnings({"method.invocation.invalid", "initialization.fields.uninitialized"})
+  @SuppressWarnings({"method.invocation", "initialization.fields.uninitialized"})
   public PGStream(SocketFactory socketFactory, HostSpec hostSpec, int timeout) throws IOException {
     this.socketFactory = socketFactory;
     this.hostSpec = hostSpec;
@@ -103,8 +103,8 @@ public class PGStream implements Closeable, Flushable {
     int4Buf = new byte[4];
   }
 
-  @SuppressWarnings({"method.invocation.invalid", "initialization.fields.uninitialized"})
-  public PGStream(PGStream pgStream, int timeout ) throws IOException {
+  @SuppressWarnings({"method.invocation", "initialization.fields.uninitialized"})
+  public PGStream(PGStream pgStream, int timeout) throws IOException {
 
     /*
     Some defaults
@@ -113,6 +113,7 @@ public class PGStream implements Closeable, Flushable {
     int receiveBufferSize = 1024;
     int soTimeout = 0;
     boolean keepAlive = false;
+    boolean tcpNoDelay = true;
 
     /*
     Get the existing values before closing the stream
@@ -122,6 +123,7 @@ public class PGStream implements Closeable, Flushable {
       receiveBufferSize = pgStream.getSocket().getReceiveBufferSize();
       soTimeout = pgStream.getSocket().getSoTimeout();
       keepAlive = pgStream.getSocket().getKeepAlive();
+      tcpNoDelay = pgStream.getSocket().getTcpNoDelay();
 
     } catch ( SocketException ex ) {
       // ignore it
@@ -140,6 +142,7 @@ public class PGStream implements Closeable, Flushable {
     socket.setSendBufferSize(sendBufferSize);
     setNetworkTimeout(soTimeout);
     socket.setKeepAlive(keepAlive);
+    socket.setTcpNoDelay(tcpNoDelay);
 
     int2Buf = new byte[2];
     int4Buf = new byte[4];
@@ -200,7 +203,7 @@ public class PGStream implements Closeable, Flushable {
       if (!pgInput.ensureBytes(1, false)) {
         return false;
       }
-      available = (pgInput.peek() != -1);
+      available = pgInput.peek() != -1;
     } catch (SocketTimeoutException e) {
       return false;
     } finally {
@@ -223,21 +226,33 @@ public class PGStream implements Closeable, Flushable {
   }
 
   private Socket createSocket(int timeout) throws IOException {
-    Socket socket = socketFactory.createSocket();
-    String localSocketAddress = hostSpec.getLocalSocketAddress();
-    if (localSocketAddress != null) {
-      socket.bind(new InetSocketAddress(InetAddress.getByName(localSocketAddress), 0));
+    Socket socket = null;
+    try {
+      socket = socketFactory.createSocket();
+      String localSocketAddress = hostSpec.getLocalSocketAddress();
+      if (localSocketAddress != null) {
+        socket.bind(new InetSocketAddress(InetAddress.getByName(localSocketAddress), 0));
+      }
+      if (!socket.isConnected()) {
+        // When using a SOCKS proxy, the host might not be resolvable locally,
+        // thus we defer resolution until the traffic reaches the proxy. If there
+        // is no proxy, we must resolve the host to an IP to connect the socket.
+        InetSocketAddress address = hostSpec.shouldResolve()
+            ? new InetSocketAddress(hostSpec.getHost(), hostSpec.getPort())
+            : InetSocketAddress.createUnresolved(hostSpec.getHost(), hostSpec.getPort());
+        socket.connect(address, timeout);
+      }
+      return socket;
+    } catch ( Exception ex ) {
+      if (socket != null) {
+        try {
+          socket.close();
+        } catch ( Exception ex1 ) {
+          ex.addSuppressed(ex1);
+        }
+      }
+      throw ex;
     }
-    if (!socket.isConnected()) {
-      // When using a SOCKS proxy, the host might not be resolvable locally,
-      // thus we defer resolution until the traffic reaches the proxy. If there
-      // is no proxy, we must resolve the host to an IP to connect the socket.
-      InetSocketAddress address = hostSpec.shouldResolve()
-          ? new InetSocketAddress(hostSpec.getHost(), hostSpec.getPort())
-          : InetSocketAddress.createUnresolved(hostSpec.getHost(), hostSpec.getPort());
-      socket.connect(address, timeout);
-    }
-    return socket;
   }
 
   /**
@@ -292,9 +307,11 @@ public class PGStream implements Closeable, Flushable {
     // Intercept flush() downcalls from the writer; our caller
     // will call PGStream.flush() as needed.
     OutputStream interceptor = new FilterOutputStream(pgOutput) {
+      @Override
       public void flush() throws IOException {
       }
 
+      @Override
       public void close() throws IOException {
         super.flush();
       }
@@ -352,8 +369,8 @@ public class PGStream implements Closeable, Flushable {
    * @throws IOException if an I/O error occurs or {@code val} cannot be encoded in 2 bytes
    */
   public void sendInteger2(int val) throws IOException {
-    if (val < Short.MIN_VALUE || val > Short.MAX_VALUE) {
-      throw new IOException("Tried to send an out-of-range integer as a 2-byte value: " + val);
+    if (val < 0 || val > 65535) {
+      throw new IllegalArgumentException("Tried to send an out-of-range integer as a 2-byte unsigned int value: " + val);
     }
     int2Buf[0] = (byte) (val >>> 8);
     int2Buf[1] = (byte) val;
@@ -372,7 +389,7 @@ public class PGStream implements Closeable, Flushable {
 
   /**
    * Send a fixed-size array of bytes to the backend. If {@code buf.length < siz}, pad with zeros.
-   * If {@code buf.lengh > siz}, truncate the array.
+   * If {@code buf.length > siz}, truncate the array.
    *
    * @param buf the array of bytes to be sent
    * @param siz the number of bytes to be sent
@@ -394,7 +411,7 @@ public class PGStream implements Closeable, Flushable {
   public void send(byte[] buf, int off, int siz) throws IOException {
     int bufamt = buf.length - off;
     pgOutput.write(buf, off, bufamt < siz ? bufamt : siz);
-    for (int i = bufamt; i < siz; ++i) {
+    for (int i = bufamt; i < siz; i++) {
       pgOutput.write(0);
     }
   }
@@ -595,7 +612,7 @@ public class PGStream implements Closeable, Flushable {
 
     increaseByteCounter(dataToReadSize);
     OutOfMemoryError oom = null;
-    for (int i = 0; i < nf; ++i) {
+    for (int i = 0; i < nf; i++) {
       int size = receiveInteger4();
       if (size != -1) {
         try {
@@ -664,12 +681,13 @@ public class PGStream implements Closeable, Flushable {
    */
   public void sendStream(InputStream inStream, int remaining) throws IOException {
     int expectedLength = remaining;
+    byte[] streamBuffer = this.streamBuffer;
     if (streamBuffer == null) {
-      streamBuffer = new byte[8192];
+      this.streamBuffer = streamBuffer = new byte[8192];
     }
 
     while (remaining > 0) {
-      int count = (remaining > streamBuffer.length ? streamBuffer.length : remaining);
+      int count = remaining > streamBuffer.length ? streamBuffer.length : remaining;
       int readCount;
 
       try {
@@ -683,7 +701,7 @@ public class PGStream implements Closeable, Flushable {
         while (remaining > 0) {
           send(streamBuffer, count);
           remaining -= count;
-          count = (remaining > streamBuffer.length ? streamBuffer.length : remaining);
+          count = remaining > streamBuffer.length ? streamBuffer.length : remaining;
         }
         throw new PGBindException(ioe);
       }
@@ -818,7 +836,7 @@ public class PGStream implements Closeable, Flushable {
       if (resultBufferByteCount > maxResultBuffer) {
         throw new PSQLException(GT.tr(
           "Result set exceeded maxResultBuffer limit. Received:  {0}; Current limit: {1}",
-          String.valueOf(resultBufferByteCount), String.valueOf(maxResultBuffer)),PSQLState.COMMUNICATION_ERROR);
+          String.valueOf(resultBufferByteCount), String.valueOf(maxResultBuffer)), PSQLState.COMMUNICATION_ERROR);
       }
     }
   }

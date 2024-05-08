@@ -6,7 +6,6 @@
 package org.postgresql.test.jdbc2.optional;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
@@ -91,8 +90,6 @@ public abstract class BaseDataSourceTest {
     bds.setUser(TestUtil.getUser());
     bds.setPassword(TestUtil.getPassword());
     bds.setPrepareThreshold(TestUtil.getPrepareThreshold());
-    bds.setLoggerLevel(TestUtil.getLogLevel());
-    bds.setLoggerFile(TestUtil.getLogFile());
     bds.setProtocolVersion(TestUtil.getProtocolVersion());
   }
 
@@ -166,13 +163,11 @@ public abstract class BaseDataSourceTest {
    */
   @Test
   public void testNotPooledConnection() throws SQLException {
-    con = getDataSourceConnection();
-    String name = con.toString();
-    con.close();
-    con = getDataSourceConnection();
-    String name2 = con.toString();
-    con.close();
-    assertNotEquals(name, name2);
+    Connection con1 = getDataSourceConnection();
+    con1.close();
+    Connection con2 = getDataSourceConnection();
+    con2.close();
+    assertNotSame(con1, con2);
   }
 
   /**
@@ -213,7 +208,7 @@ public abstract class BaseDataSourceTest {
     String url = bds.getURL();
     testUseConnection();
     assertSame("Test should not have changed DataSource (" + bds + " != " + oldbds + ")!",
-        oldbds , bds);
+        oldbds, bds);
     assertEquals("Test should not have changed DataSource URL",
         oldurl, url);
   }
@@ -222,7 +217,7 @@ public abstract class BaseDataSourceTest {
    * Uses the mini-JNDI implementation for testing purposes.
    */
   protected InitialContext getInitialContext() {
-    Hashtable<String, Object> env = new Hashtable<String, Object>();
+    Hashtable<String, Object> env = new Hashtable<>();
     env.put(Context.INITIAL_CONTEXT_FACTORY, MiniJndiContextFactory.class.getName());
     try {
       return new InitialContext(env);

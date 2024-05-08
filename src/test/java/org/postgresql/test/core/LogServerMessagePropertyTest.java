@@ -5,21 +5,24 @@
 
 package org.postgresql.test.core;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
 import org.postgresql.PGProperty;
 import org.postgresql.core.ServerVersion;
 import org.postgresql.test.TestUtil;
 import org.postgresql.util.PSQLState;
 
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.Locale;
 import java.util.Properties;
 
-public class LogServerMessagePropertyTest {
+class LogServerMessagePropertyTest {
   private static final String PRIMARY_KEY_NAME = "lms_test_pk";
   private static final String CREATE_TABLE_SQL =
       "CREATE TABLE pg_temp.lms_test ("
@@ -37,9 +40,9 @@ public class LogServerMessagePropertyTest {
    */
   private static String testViolatePrimaryKey(Properties props, boolean batch) throws SQLException {
     Connection conn = TestUtil.openDB(props);
-    Assume.assumeTrue(TestUtil.haveMinimumServerVersion(conn, ServerVersion.v9_1));
+    Assumptions.assumeTrue(TestUtil.haveMinimumServerVersion(conn, ServerVersion.v9_1));
     try {
-      TestUtil.execute(CREATE_TABLE_SQL, conn);
+      TestUtil.execute(conn, CREATE_TABLE_SQL);
       if (batch) {
         PreparedStatement stmt = conn.prepareStatement(INSERT_SQL);
         stmt.addBatch();
@@ -47,18 +50,18 @@ public class LogServerMessagePropertyTest {
         stmt.executeBatch();
       } else {
         // First insert should work
-        TestUtil.execute(INSERT_SQL, conn);
+        TestUtil.execute(conn, INSERT_SQL);
         // Second insert should throw a duplicate key error
-        TestUtil.execute(INSERT_SQL, conn);
+        TestUtil.execute(conn, INSERT_SQL);
       }
     } catch (SQLException e) {
-      Assert.assertEquals("SQL state must be for a unique violation", PSQLState.UNIQUE_VIOLATION.getState(), e.getSQLState());
+      assertEquals(PSQLState.UNIQUE_VIOLATION.getState(), e.getSQLState(), "SQL state must be for a unique violation");
       return e.getMessage();
     } finally {
       conn.close();
     }
     // Should never get here:
-    Assert.fail("A duplicate key exception should have occurred");
+    fail("A duplicate key exception should have occurred");
     return null;
   }
 
@@ -67,23 +70,23 @@ public class LogServerMessagePropertyTest {
   }
 
   private static void assertMessageContains(String message, String text) {
-    if (message.toLowerCase().indexOf(text.toLowerCase()) < 0) {
-      Assert.fail(String.format("Message must contain text '%s': %s", text, message));
+    if (!message.toLowerCase(Locale.ROOT).contains(text.toLowerCase(Locale.ROOT))) {
+      fail(String.format("Message must contain text '%s': %s", text, message));
     }
   }
 
   private static void assertMessageDoesNotContain(String message, String text) {
-    if (message.toLowerCase().indexOf(text.toLowerCase()) >= 0) {
-      Assert.fail(String.format("Message must not contain text '%s': %s", text, message));
+    if (message.toLowerCase(Locale.ROOT).contains(text.toLowerCase(Locale.ROOT))) {
+      fail(String.format("Message must not contain text '%s': %s", text, message));
     }
   }
 
   @Test
-  public void testWithDefaults() throws SQLException {
+  void withDefaults() throws SQLException {
     Properties props = new Properties();
     String message = testViolatePrimaryKey(props);
     assertMessageContains(message, PRIMARY_KEY_NAME);
-    assertMessageContains(message, "Detail:");
+    // TODO: Detail is locale-specific assertMessageContains(message, "Detail:");
     assertMessageContains(message, SECRET_VALUE);
   }
 
@@ -91,17 +94,17 @@ public class LogServerMessagePropertyTest {
    * NOTE: This should be the same as the default case as "true" is the default.
    */
   @Test
-  public void testWithExplicitlyEnabled() throws SQLException {
+  void withExplicitlyEnabled() throws SQLException {
     Properties props = new Properties();
     props.setProperty(PGProperty.LOG_SERVER_ERROR_DETAIL.getName(), "true");
     String message = testViolatePrimaryKey(props);
     assertMessageContains(message, PRIMARY_KEY_NAME);
-    assertMessageContains(message, "Detail:");
+    // TODO: Detail is locale-specific assertMessageContains(message, "Detail:");
     assertMessageContains(message, SECRET_VALUE);
   }
 
   @Test
-  public void testWithLogServerErrorDetailDisabled() throws SQLException {
+  void withLogServerErrorDetailDisabled() throws SQLException {
     Properties props = new Properties();
     props.setProperty(PGProperty.LOG_SERVER_ERROR_DETAIL.getName(), "false");
     String message = testViolatePrimaryKey(props);
@@ -111,11 +114,11 @@ public class LogServerMessagePropertyTest {
   }
 
   @Test
-  public void testBatchWithDefaults() throws SQLException {
+  void batchWithDefaults() throws SQLException {
     Properties props = new Properties();
     String message = testViolatePrimaryKey(props, true);
     assertMessageContains(message, PRIMARY_KEY_NAME);
-    assertMessageContains(message, "Detail:");
+    // TODO: Detail is locale-specific assertMessageContains(message, "Detail:");
     assertMessageContains(message, SECRET_VALUE);
   }
 
@@ -123,22 +126,22 @@ public class LogServerMessagePropertyTest {
    * NOTE: This should be the same as the default case as "true" is the default.
    */
   @Test
-  public void testBatchExplicitlyEnabled() throws SQLException {
+  void batchExplicitlyEnabled() throws SQLException {
     Properties props = new Properties();
     props.setProperty(PGProperty.LOG_SERVER_ERROR_DETAIL.getName(), "true");
     String message = testViolatePrimaryKey(props, true);
     assertMessageContains(message, PRIMARY_KEY_NAME);
-    assertMessageContains(message, "Detail:");
+    // TODO: Detail is locale-specific assertMessageContains(message, "Detail:");
     assertMessageContains(message, SECRET_VALUE);
   }
 
   @Test
-  public void testBatchWithLogServerErrorDetailDisabled() throws SQLException {
+  void batchWithLogServerErrorDetailDisabled() throws SQLException {
     Properties props = new Properties();
     props.setProperty(PGProperty.LOG_SERVER_ERROR_DETAIL.getName(), "false");
     String message = testViolatePrimaryKey(props, true);
     assertMessageContains(message, PRIMARY_KEY_NAME);
-    assertMessageDoesNotContain(message, "Detail:");
+    // TODO: Detail is locale-specific assertMessageDoesNotContain(message, "Detail:");
     assertMessageDoesNotContain(message, SECRET_VALUE);
   }
 }

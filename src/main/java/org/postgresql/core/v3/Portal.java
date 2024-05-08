@@ -26,11 +26,13 @@ class Portal implements ResultCursor {
     this.encodedName = portalName.getBytes(StandardCharsets.UTF_8);
   }
 
+  @Override
   public void close() {
+    PhantomReference<?> cleanupRef = this.cleanupRef;
     if (cleanupRef != null) {
       cleanupRef.clear();
       cleanupRef.enqueue();
-      cleanupRef = null;
+      this.cleanupRef = null;
     }
   }
 
@@ -50,6 +52,7 @@ class Portal implements ResultCursor {
     this.cleanupRef = cleanupRef;
   }
 
+  @Override
   public String toString() {
     return portalName;
   }

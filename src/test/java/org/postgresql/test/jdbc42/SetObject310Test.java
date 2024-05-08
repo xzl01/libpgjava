@@ -13,12 +13,13 @@ import static org.junit.Assume.assumeTrue;
 import org.postgresql.test.TestUtil;
 import org.postgresql.test.jdbc2.BaseTest4;
 
-import org.junit.After;
-import org.junit.Before;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -29,6 +30,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.chrono.IsoChronology;
@@ -75,29 +77,37 @@ public class SetObject310Test extends BaseTest4 {
 
   @Parameterized.Parameters(name = "binary = {0}")
   public static Iterable<Object[]> data() {
-    Collection<Object[]> ids = new ArrayList<Object[]>();
+    Collection<Object[]> ids = new ArrayList<>();
     for (BaseTest4.BinaryMode binaryMode : BaseTest4.BinaryMode.values()) {
       ids.add(new Object[]{binaryMode});
     }
     return ids;
   }
 
-  @Before
-  public void setUp() throws Exception {
-    super.setUp();
-    TestUtil.createTable(con, "table1", "timestamp_without_time_zone_column timestamp without time zone,"
-            + "timestamp_with_time_zone_column timestamp with time zone,"
-            + "date_column date,"
-            + "time_without_time_zone_column time without time zone,"
-            + "time_with_time_zone_column time with time zone"
-    );
+  @BeforeClass
+  public static void createTables() throws Exception {
+    try (Connection con = TestUtil.openDB()) {
+      TestUtil.createTable(con, "table1", "timestamp_without_time_zone_column timestamp without time zone,"
+              + "timestamp_with_time_zone_column timestamp with time zone,"
+              + "date_column date,"
+              + "time_without_time_zone_column time without time zone,"
+              + "time_with_time_zone_column time with time zone"
+      );
+    }
   }
 
-  @After
-  public void tearDown() throws SQLException {
+  @AfterClass
+  public static void dropTables() throws Exception {
+    try (Connection con = TestUtil.openDB()) {
+      TestUtil.dropTable(con, "table1");
+    }
     TimeZone.setDefault(saveTZ);
-    TestUtil.dropTable(con, "table1");
-    super.tearDown();
+  }
+
+  @Override
+  public void setUp() throws Exception {
+    super.setUp();
+    TestUtil.execute(con, "delete from table1");
   }
 
   private void insert(Object data, String columnName, Integer type) throws SQLException {
@@ -145,6 +155,10 @@ public class SetObject310Test extends BaseTest4 {
   }
 
   private <T> T insertThenReadWithoutType(Object data, String columnName, Class<T> expectedType) throws SQLException {
+    return insertThenReadWithoutType(data, columnName, expectedType, true);
+  }
+
+  private <T> T insertThenReadWithoutType(Object data, String columnName, Class<T> expectedType, boolean checkRoundtrip) throws SQLException {
     PreparedStatement ps = con.prepareStatement(TestUtil.insertSQL("table1", columnName, "?"));
     try {
       ps.setObject(1, data);
@@ -160,6 +174,10 @@ public class SetObject310Test extends BaseTest4 {
         assertNotNull(rs);
 
         assertTrue(rs.next());
+        if (checkRoundtrip) {
+          assertEquals("Roundtrip set/getObject with type should return same result",
+              data, rs.getObject(1, data.getClass()));
+        }
         return expectedType.cast(rs.getObject(1));
       } finally {
         rs.close();
@@ -170,6 +188,10 @@ public class SetObject310Test extends BaseTest4 {
   }
 
   private <T> T insertThenReadWithType(Object data, int sqlType, String columnName, Class<T> expectedType) throws SQLException {
+    return insertThenReadWithType(data, sqlType, columnName, expectedType, true);
+  }
+
+  private <T> T insertThenReadWithType(Object data, int sqlType, String columnName, Class<T> expectedType, boolean checkRoundtrip) throws SQLException {
     PreparedStatement ps = con.prepareStatement(TestUtil.insertSQL("table1", columnName, "?"));
     try {
       ps.setObject(1, data, sqlType);
@@ -185,6 +207,10 @@ public class SetObject310Test extends BaseTest4 {
         assertNotNull(rs);
 
         assertTrue(rs.next());
+        if (checkRoundtrip) {
+          assertEquals("Roundtrip set/getObject with type should return same result",
+              data, rs.getObject(1, data.getClass()));
+        }
         return expectedType.cast(rs.getObject(1));
       } finally {
         rs.close();
@@ -215,9 +241,7 @@ public class SetObject310Test extends BaseTest4 {
       ZoneId zone = ZoneId.of(zoneId);
       for (String date : datesToTest) {
         LocalDateTime localDateTime = LocalDateTime.parse(date);
-        String expected = localDateTime.atZone(zone)
-            .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-            .replace('T', ' ');
+        String expected = date.replace('T', ' ');
         localTimestamps(zone, localDateTime, expected);
       }
     }
@@ -229,7 +253,7 @@ public class SetObject310Test extends BaseTest4 {
   @Test
   public void testSetOffsetDateTime() throws SQLException {
     List<String> zoneIdsToTest = getZoneIdsToTest();
-    List<TimeZone> storeZones = new ArrayList<TimeZone>();
+    List<TimeZone> storeZones = new ArrayList<>();
     for (String zoneId : zoneIdsToTest) {
       storeZones.add(TimeZone.getTimeZone(zoneId));
     }
@@ -270,7 +294,7 @@ public class SetObject310Test extends BaseTest4 {
   }
 
   private List<String> getZoneIdsToTest() {
-    List<String> zoneIdsToTest = new ArrayList<String>();
+    List<String> zoneIdsToTest = new ArrayList<>();
     zoneIdsToTest.add("Africa/Casablanca"); // It is something like GMT+0..GMT+1
     zoneIdsToTest.add("America/Adak"); // It is something like GMT-10..GMT-9
     zoneIdsToTest.add("Atlantic/Azores"); // It is something like GMT-1..GMT+0
@@ -309,13 +333,13 @@ public class SetObject310Test extends BaseTest4 {
         try (ResultSet rs = ps.executeQuery()) {
           rs.next();
           String noType = rs.getString(1);
-          OffsetDateTime noTypeRes = OffsetDateTime.parse(noType.replace(' ', 'T') + ":00");
+          OffsetDateTime noTypeRes = parseBackendTimestamp(noType);
           assertEquals(
               "OffsetDateTime=" + data + " (with ZoneId=" + dataZone + "), with TimeZone.default="
                   + storeZone + ", setObject(int, Object)", data.toInstant(),
               noTypeRes.toInstant());
           String withType = rs.getString(2);
-          OffsetDateTime withTypeRes = OffsetDateTime.parse(withType.replace(' ', 'T') + ":00");
+          OffsetDateTime withTypeRes = parseBackendTimestamp(withType);
           assertEquals(
               "OffsetDateTime=" + data + " (with ZoneId=" + dataZone + "), with TimeZone.default="
                   + storeZone + ", setObject(int, Object, TIMESTAMP_WITH_TIMEZONE)",
@@ -323,6 +347,20 @@ public class SetObject310Test extends BaseTest4 {
         }
       }
     }
+  }
+
+  /**
+   * Sometimes backend responds like {@code 1950-07-20 16:20:00+03} and sometimes it responds like
+   * {@code 1582-09-30 13:49:57+02:30:17}, so we need to handle cases when "offset minutes" is missing.
+   */
+  private static OffsetDateTime parseBackendTimestamp(String backendTimestamp) {
+    String isoTimestamp = backendTimestamp.replace(' ', 'T');
+    // If the pattern already has trailing :XX we are fine
+    // Otherwise add :00 for timezone offset minutes
+    if (isoTimestamp.charAt(isoTimestamp.length() - 3) != ':') {
+      isoTimestamp += ":00";
+    }
+    return OffsetDateTime.parse(isoTimestamp);
   }
 
   @Test
@@ -336,7 +374,7 @@ public class SetObject310Test extends BaseTest4 {
     // TODO: fix for binary
     assumeBinaryModeRegular();
     LocalTime time = LocalTime.parse("23:59:59.999999500");
-    Time actual = insertThenReadWithoutType(time, "time_without_time_zone_column", Time.class);
+    Time actual = insertThenReadWithoutType(time, "time_without_time_zone_column", Time.class, false/*no roundtrip*/);
     assertEquals(Time.valueOf("24:00:00"), actual);
   }
 
@@ -346,7 +384,7 @@ public class SetObject310Test extends BaseTest4 {
     assumeBinaryModeRegular();
     LocalTime time = LocalTime.parse("23:59:59.999999500");
     Time actual =
-        insertThenReadWithType(time, Types.TIME, "time_without_time_zone_column", Time.class);
+        insertThenReadWithType(time, Types.TIME, "time_without_time_zone_column", Time.class, false/*no roundtrip*/);
     assertEquals(Time.valueOf("24:00:00"), actual);
   }
 
@@ -358,12 +396,17 @@ public class SetObject310Test extends BaseTest4 {
     assumeTrue(TestUtil.haveIntegerDateTimes(con));
 
     // use BC for funsies
-    List<LocalDateTime> bcDates = new ArrayList<LocalDateTime>();
+    List<LocalDateTime> bcDates = new ArrayList<>();
     bcDates.add(LocalDateTime.parse("1997-06-30T23:59:59.999999").with(ChronoField.ERA, IsoEra.BCE.getValue()));
     bcDates.add(LocalDateTime.parse("0997-06-30T23:59:59.999999").with(ChronoField.ERA, IsoEra.BCE.getValue()));
 
     for (LocalDateTime bcDate : bcDates) {
       String expected = LOCAL_TIME_FORMATTER.format(bcDate);
+      if (expected.endsWith(" BCE")) {
+        // Java 22.ea.25-open prints "BCE" even though previous releases printed "BC"
+        // See https://bugs.openjdk.org/browse/JDK-8320747
+        expected = expected.substring(0, expected.length() - 1);
+      }
       localTimestamps(ZoneOffset.UTC, bcDate, expected);
     }
   }
@@ -426,6 +469,24 @@ public class SetObject310Test extends BaseTest4 {
     Time actual = insertThenReadWithoutType(data, "time_without_time_zone_column", Time.class);
     Time expected = Time.valueOf("16:21:51");
     assertEquals(expected, actual);
+  }
+
+  /**
+   * Test the behavior setObject for time columns.
+   */
+  @Test
+  public void testSetOffsetTimeWithType() throws SQLException {
+    OffsetTime data = OffsetTime.parse("16:21:51+12:34");
+    insertThenReadWithType(data, Types.TIME, "time_with_time_zone_column", Time.class);
+  }
+
+  /**
+   * Test the behavior setObject for time columns.
+   */
+  @Test
+  public void testSetOffsetTimeWithoutType() throws SQLException {
+    OffsetTime data = OffsetTime.parse("16:21:51+12:34");
+    insertThenReadWithoutType(data, "time_with_time_zone_column", Time.class);
   }
 
 }

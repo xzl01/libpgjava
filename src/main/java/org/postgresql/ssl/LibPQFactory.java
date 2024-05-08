@@ -29,6 +29,7 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.util.Locale;
 import java.util.Properties;
 
 import javax.net.ssl.KeyManager;
@@ -53,10 +54,10 @@ public class LibPQFactory extends WrappedFactory {
       Properties info) throws PSQLException {
     // Determine the callback handler
     CallbackHandler cbh;
-    String sslpasswordcallback = PGProperty.SSL_PASSWORD_CALLBACK.get(info);
+    String sslpasswordcallback = PGProperty.SSL_PASSWORD_CALLBACK.getOrDefault(info);
     if (sslpasswordcallback != null) {
       try {
-        cbh = (CallbackHandler) ObjectFactory.instantiate(sslpasswordcallback, info, false, null);
+        cbh = ObjectFactory.instantiate(CallbackHandler.class, sslpasswordcallback, info, false, null);
       } catch (Exception e) {
         throw new PSQLException(
           GT.tr("The password callback class provided {0} could not be instantiated.",
@@ -64,7 +65,7 @@ public class LibPQFactory extends WrappedFactory {
           PSQLState.CONNECTION_FAILURE, e);
       }
     } else {
-      cbh = new ConsoleCallbackHandler(PGProperty.SSL_PASSWORD.get(info));
+      cbh = new ConsoleCallbackHandler(PGProperty.SSL_PASSWORD.getOrDefault(info));
     }
     return cbh;
   }
@@ -74,7 +75,7 @@ public class LibPQFactory extends WrappedFactory {
       String sslkeyfile, String defaultdir, Properties info) throws  PSQLException {
 
     // Load the client's certificate and key
-    String sslcertfile = PGProperty.SSL_CERT.get(info);
+    String sslcertfile = PGProperty.SSL_CERT.getOrDefault(info);
     if (sslcertfile == null) { // Fall back to default
       defaultfile = true;
       sslcertfile = defaultdir + "postgresql.crt";
@@ -104,13 +105,13 @@ public class LibPQFactory extends WrappedFactory {
       String pathsep = System.getProperty("file.separator");
       String defaultdir;
 
-      if (System.getProperty("os.name").toLowerCase().contains("windows")) { // It is Windows
+      if (System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows")) { // It is Windows
         defaultdir = System.getenv("APPDATA") + pathsep + "postgresql" + pathsep;
       } else {
         defaultdir = System.getProperty("user.home") + pathsep + ".postgresql" + pathsep;
       }
 
-      String sslkeyfile = PGProperty.SSL_KEY.get(info);
+      String sslkeyfile = PGProperty.SSL_KEY.getOrDefault(info);
       if (sslkeyfile == null) { // Fall back to default
         defaultfile = true;
         sslkeyfile = defaultdir + "postgresql.pk8";
@@ -138,7 +139,7 @@ public class LibPQFactory extends WrappedFactory {
           // this should never happen
           throw new NoSuchAlgorithmException("jks KeyStore not available");
         }
-        String sslrootcertfile = PGProperty.SSL_ROOT_CERT.get(info);
+        String sslrootcertfile = PGProperty.SSL_ROOT_CERT.getOrDefault(info);
         if (sslrootcertfile == null) { // Fall back to default
           sslrootcertfile = defaultdir + "root.crt";
         }
@@ -203,10 +204,10 @@ public class LibPQFactory extends WrappedFactory {
   public void throwKeyManagerException() throws PSQLException {
     if (km != null) {
       if (km instanceof LazyKeyManager) {
-        ((LazyKeyManager)km).throwKeyManagerException();
+        ((LazyKeyManager) km).throwKeyManagerException();
       }
       if (km instanceof PKCS12KeyManager) {
-        ((PKCS12KeyManager)km).throwKeyManagerException();
+        ((PKCS12KeyManager) km).throwKeyManagerException();
       }
     }
   }
@@ -217,7 +218,7 @@ public class LibPQFactory extends WrappedFactory {
    */
   public static class ConsoleCallbackHandler implements CallbackHandler {
 
-    private char /* @Nullable */ [] password = null;
+    private char /* @Nullable */ [] password;
 
     ConsoleCallbackHandler(/* @Nullable */ String password) {
       if (password != null) {

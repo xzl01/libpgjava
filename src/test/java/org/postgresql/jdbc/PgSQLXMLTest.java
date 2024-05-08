@@ -50,10 +50,10 @@ public class PgSQLXMLTest extends BaseTest4 {
 
   @Test
   public void setCharacterStream() throws Exception {
-    String exmplar = "<x>value</x>";
+    String example = "<x>value</x>";
     SQLXML pgSQLXML = con.createSQLXML();
     Writer writer = pgSQLXML.setCharacterStream();
-    writer.write(exmplar);
+    writer.write(example);
     PreparedStatement preparedStatement = con.prepareStatement("insert into xmltab values (?)");
     preparedStatement.setSQLXML(1, pgSQLXML);
     preparedStatement.execute();
@@ -63,7 +63,7 @@ public class PgSQLXMLTest extends BaseTest4 {
     assertTrue(rs.next());
     SQLXML result = rs.getSQLXML(1);
     assertNotNull(result);
-    assertEquals(exmplar, result.getString());
+    assertEquals(example, result.getString());
   }
 
   private static final String LICENSE_URL =
@@ -99,7 +99,7 @@ public class PgSQLXMLTest extends BaseTest4 {
     String message = ex.getCause().getMessage();
     assertTrue(
         "Expected to get a <<DOCTYPE disallowed>> SAXParseException. Actual message is " + message,
-        message.startsWith("DOCTYPE is disallowed"));
+        message.contains("DOCTYPE"));
   }
 
   @Test
@@ -122,7 +122,7 @@ public class PgSQLXMLTest extends BaseTest4 {
     String message = ex.getCause().getMessage();
     assertTrue(
         "Expected to get a <<DOCTYPE disallowed>> TransformerException. Actual message is " + message,
-        message.startsWith("DOCTYPE is disallowed"));
+        message.contains("DOCTYPE"));
   }
 
   @Test

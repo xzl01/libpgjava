@@ -5,11 +5,10 @@
 
 package org.postgresql.largeobject;
 
-import static org.postgresql.util.internal.Nullness.castNonNull;
-
 import org.postgresql.core.BaseConnection;
 import org.postgresql.fastpath.Fastpath;
 import org.postgresql.fastpath.FastpathArg;
+import org.postgresql.util.ByteStreamWriter;
 import org.postgresql.util.PSQLException;
 import org.postgresql.util.PSQLState;
 
@@ -42,9 +41,10 @@ import java.sql.SQLException;
  * @see java.sql.PreparedStatement#setBinaryStream
  * @see java.sql.PreparedStatement#setUnicodeStream
  */
+@SuppressWarnings("deprecation") // support for deprecated Fastpath API
 public class LargeObject
-    implements AutoCloseable
-    /* hi, checkstyle */ {
+    implements AutoCloseable {
+
   /**
    * Indicates a seek from the beginning of a file.
    */
@@ -60,6 +60,8 @@ public class LargeObject
    */
   public static final int SEEK_END = 2;
 
+  private static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
+
   private final Fastpath fp; // Fastpath API to use
   private final long oid; // OID of this object
   private final int mode; // read/write mode of this object
@@ -67,7 +69,7 @@ public class LargeObject
 
   private /* @Nullable */ BlobOutputStream os; // The current output stream
 
-  private boolean closed = false; // true when we are closed
+  private boolean closed; // true when we are closed
 
   private /* @Nullable */ BaseConnection conn; // Only initialized when open a LOB with CommitOnClose
   private final boolean commitOnClose; // Only initialized when open a LOB with CommitOnClose
@@ -156,6 +158,7 @@ public class LargeObject
    *
    * @throws SQLException if a database-access error occurs.
    */
+  @Override
   public void close() throws SQLException {
     if (!closed) {
       // flush any open output streams
@@ -195,7 +198,11 @@ public class LargeObject
     FastpathArg[] args = new FastpathArg[2];
     args[0] = new FastpathArg(fd);
     args[1] = new FastpathArg(len);
-    return castNonNull(fp.getData("loread", args));
+    byte[] bytes = fp.getData("loread", args);
+    if (bytes == null) {
+      return EMPTY_BYTE_ARRAY;
+    }
+    return bytes;
   }
 
   /**
@@ -209,12 +216,10 @@ public class LargeObject
    */
   public int read(byte[] buf, int off, int len) throws SQLException {
     byte[] b = read(len);
-    if (b == null) {
+    if (b.length == 0) {
       return 0;
     }
-    if (b.length < len) {
-      len = b.length;
-    }
+    len = Math.min(len, b.length);
     System.arraycopy(b, 0, buf, off, len);
     return len;
   }
@@ -244,6 +249,19 @@ public class LargeObject
     FastpathArg[] args = new FastpathArg[2];
     args[0] = new FastpathArg(fd);
     args[1] = new FastpathArg(buf, off, len);
+    fp.fastpath("lowrite", args);
+  }
+
+  /**
+   * Writes some data from a given writer to the object.
+   *
+   * @param writer the source of the data to write
+   * @throws SQLException if a database-access error occurs.
+   */
+  public void write(ByteStreamWriter writer) throws SQLException {
+    FastpathArg[] args = new FastpathArg[2];
+    args[0] = new FastpathArg(fd);
+    args[1] = FastpathArg.of(writer);
     fp.fastpath("lowrite", args);
   }
 
@@ -383,7 +401,7 @@ public class LargeObject
    * @throws SQLException if a database-access error occurs.
    */
   public InputStream getInputStream() throws SQLException {
-    return new BlobInputStream(this, 4096);
+    return new BlobInputStream(this);
   }
 
   /**
@@ -395,7 +413,21 @@ public class LargeObject
    * @throws SQLException if a database-access error occurs.
    */
   public InputStream getInputStream(long limit) throws SQLException {
-    return new BlobInputStream(this, 4096, limit);
+    return new BlobInputStream(this, BlobInputStream.DEFAULT_MAX_BUFFER_SIZE, limit);
+  }
+
+  /**
+   * Returns an {@link InputStream} from this object, that will limit the amount of data that is
+   * visible.
+   * Added mostly for testing
+   *
+   * @param bufferSize buffer size for the stream
+   * @param limit maximum number of bytes the resulting stream will serve
+   * @return {@link InputStream} from this object
+   * @throws SQLException if a database-access error occurs.
+   */
+  public InputStream getInputStream(int bufferSize, long limit) throws SQLException {
+    return new BlobInputStream(this, bufferSize, limit);
   }
 
   /**
@@ -408,7 +440,7 @@ public class LargeObject
    */
   public OutputStream getOutputStream() throws SQLException {
     if (os == null) {
-      os = new BlobOutputStream(this, 4096);
+      os = new BlobOutputStream(this);
     }
     return os;
   }

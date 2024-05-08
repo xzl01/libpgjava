@@ -5,6 +5,9 @@
 
 package org.postgresql.jdbc;
 
+import static org.postgresql.util.internal.Nullness.castNonNull;
+
+import org.postgresql.Driver;
 import org.postgresql.core.BaseConnection;
 import org.postgresql.core.Oid;
 import org.postgresql.core.Parser;
@@ -25,8 +28,11 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.sql.Date;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -117,7 +123,7 @@ final class ArrayDecoding {
     public void populateFromString(A arr, List</* @Nullable */ String> strings, BaseConnection connection) throws SQLException {
       final /* @Nullable */ Object[] array = (Object[]) arr;
 
-      for (int i = 0, j = strings.size(); i < j; ++i) {
+      for (int i = 0, j = strings.size(); i < j; i++) {
         final String stringVal = strings.get(i);
         array[i] = stringVal != null ? parseValue(stringVal, connection) : null;
       }
@@ -146,14 +152,14 @@ final class ArrayDecoding {
       final /* @Nullable */ Object[] array = (Object[]) arr;
 
       // skip through to the requested index
-      for (int i = 0; i < index; ++i) {
+      for (int i = 0; i < index; i++) {
         final int length = bytes.getInt();
         if (length > 0) {
           bytes.position(bytes.position() + length);
         }
       }
 
-      for (int i = 0; i < count; ++i) {
+      for (int i = 0; i < count; i++) {
         final int length = bytes.getInt();
         if (length != -1) {
           array[i] = parseValue(length, bytes, connection);
@@ -185,8 +191,7 @@ final class ArrayDecoding {
 
     @Override
     Object parseValue(int length, ByteBuffer bytes, BaseConnection connection) {
-      final long value = bytes.getInt() & 0xFFFFFFFFL;
-      return value;
+      return bytes.getInt() & 0xFFFFFFFFL;
     }
 
     @Override
@@ -326,8 +331,8 @@ final class ArrayDecoding {
     }
   };
 
-  private static final ArrayDecoder<java.sql.Date[]> DATE_DECODER = new AbstractObjectStringArrayDecoder<java.sql.Date[]>(
-      java.sql.Date.class) {
+  private static final ArrayDecoder<Date[]> DATE_DECODER = new AbstractObjectStringArrayDecoder<Date[]>(
+      Date.class) {
 
     @Override
     Object parseValue(String stringVal, BaseConnection connection) throws SQLException {
@@ -335,8 +340,8 @@ final class ArrayDecoding {
     }
   };
 
-  private static final ArrayDecoder<java.sql.Time[]> TIME_DECODER = new AbstractObjectStringArrayDecoder<java.sql.Time[]>(
-      java.sql.Time.class) {
+  private static final ArrayDecoder<Time[]> TIME_DECODER = new AbstractObjectStringArrayDecoder<Time[]>(
+      Time.class) {
 
     @Override
     Object parseValue(String stringVal, BaseConnection connection) throws SQLException {
@@ -344,8 +349,8 @@ final class ArrayDecoding {
     }
   };
 
-  private static final ArrayDecoder<java.sql.Timestamp[]> TIMESTAMP_DECODER = new AbstractObjectStringArrayDecoder<java.sql.Timestamp[]>(
-      java.sql.Timestamp.class) {
+  private static final ArrayDecoder<Timestamp[]> TIMESTAMP_DECODER = new AbstractObjectStringArrayDecoder<Timestamp[]>(
+      Timestamp.class) {
 
     @Override
     Object parseValue(String stringVal, BaseConnection connection) throws SQLException {
@@ -358,7 +363,7 @@ final class ArrayDecoding {
    * entries.
    */
   @SuppressWarnings("rawtypes")
-  private static final Map<Integer, ArrayDecoder> OID_TO_DECODER = new HashMap<Integer, ArrayDecoder>(
+  private static final Map<Integer, ArrayDecoder> OID_TO_DECODER = new HashMap<>(
       (int) (21 / .75) + 1);
 
   static {
@@ -467,7 +472,7 @@ final class ArrayDecoding {
 
     final String typeName = connection.getTypeInfo().getPGType(oid);
     if (typeName == null) {
-      throw org.postgresql.Driver.notImplemented(PgArray.class, "readArray(data,oid)");
+      throw Driver.notImplemented(PgArray.class, "readArray(data,oid)");
     }
 
     // 42.2.x should return enums as strings
@@ -508,7 +513,7 @@ final class ArrayDecoding {
     final ArrayDecoder decoder = getDecoder(elementOid, connection);
 
     if (!decoder.supportBinary()) {
-      throw org.postgresql.Driver.notImplemented(PgArray.class, "readBinaryArray(data,oid)");
+      throw Driver.notImplemented(PgArray.class, "readBinaryArray(data,oid)");
     }
 
     if (dimensions == 0) {
@@ -530,7 +535,7 @@ final class ArrayDecoding {
     }
 
     final int[] dimensionLengths = new int[dimensions];
-    for (int i = 0; i < dimensions; ++i) {
+    for (int i = 0; i < dimensions; i++) {
       dimensionLengths[i] = buffer.getInt();
       buffer.position(buffer.position() + 4);
     }
@@ -555,7 +560,7 @@ final class ArrayDecoding {
       int skip, int[] dimensionLengths, int dim, BaseConnection connection) throws SQLException {
     assert dim <= dimensionLengths.length - 2;
 
-    for (int i = 0; i < skip; ++i) {
+    for (int i = 0; i < skip; i++) {
       if (dim == dimensionLengths.length - 2) {
         decoder.populateFromBinary(array[0], 0, dimensionLengths[dim + 1], bytes, connection);
       } else {
@@ -563,7 +568,7 @@ final class ArrayDecoding {
       }
     }
 
-    for (int i = 0; i < dimensionLengths[dim]; ++i) {
+    for (int i = 0; i < dimensionLengths[dim]; i++) {
       if (dim == dimensionLengths.length - 2) {
         decoder.populateFromBinary(array[i], 0, dimensionLengths[dim + 1], bytes, connection);
       } else {
@@ -597,7 +602,7 @@ final class ArrayDecoding {
     boolean wasInsideString = false;
 
     // array dimension arrays
-    final List<PgArrayList> dims = new ArrayList<PgArrayList>();
+    final List<PgArrayList> dims = new ArrayList<>();
 
     // currently processed array
     PgArrayList curArray = arrayList;
@@ -673,7 +678,7 @@ final class ArrayDecoding {
 
         // add element to current array
         if (b != null && (!b.isEmpty() || wasInsideString)) {
-          curArray.add(!wasInsideString && b.equals("NULL") ? null : b);
+          curArray.add(!wasInsideString && "NULL".equals(b) ? null : b);
         }
 
         wasInsideString = false;
@@ -721,7 +726,7 @@ final class ArrayDecoding {
    * @throws SQLException
    *           For failures encountered during parsing.
    */
-  @SuppressWarnings({ "unchecked", "rawtypes" })
+  @SuppressWarnings({"unchecked", "rawtypes"})
   public static Object readStringArray(int index, int count, int oid, PgArrayList list, BaseConnection connection)
       throws SQLException {
 
@@ -766,7 +771,8 @@ final class ArrayDecoding {
     {
       List tmpList = (List) adjustedList.get(0);
       for (int i = 1; i < dims; i++) {
-        dimensionLengths[i] = tmpList.size();
+        // TODO: tmpList always non-null?
+        dimensionLengths[i] = castNonNull(tmpList, "first element of adjustedList is null").size();
         if (i != dims - 1) {
           tmpList = (List) tmpList.get(0);
         }
@@ -780,16 +786,17 @@ final class ArrayDecoding {
     return array;
   }
 
-  @SuppressWarnings({ "unchecked", "rawtypes" })
-  private static <A extends /* @NonNull */ Object> void storeStringValues(A[] array, ArrayDecoder<A> decoder, List list, int /* @NonNull */[] dimensionLengths,
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  private static <A extends /* @NonNull */ Object> void storeStringValues(A[] array, ArrayDecoder<A> decoder, List list, int [] dimensionLengths,
       int dim, BaseConnection connection) throws SQLException {
     assert dim <= dimensionLengths.length - 2;
 
-    for (int i = 0; i < dimensionLengths[dim]; ++i) {
+    for (int i = 0; i < dimensionLengths[dim]; i++) {
+      Object element = castNonNull(list.get(i), "list.get(i)");
       if (dim == dimensionLengths.length - 2) {
-        decoder.populateFromString(array[i], (List</* @Nullable */ String>) list.get(i), connection);
+        decoder.populateFromString(array[i], (List</* @Nullable */ String>) element, connection);
       } else {
-        storeStringValues((/* @NonNull */ A /* @NonNull */[]) array[i], decoder, (List) list.get(i), dimensionLengths, dim + 1, connection);
+        storeStringValues((/* @NonNull */ A /* @NonNull */[]) array[i], decoder, (List) element, dimensionLengths, dim + 1, connection);
       }
     }
   }

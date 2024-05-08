@@ -34,7 +34,7 @@ public class Encoding {
   /*
    * Preferred JVM encodings for backend encodings.
    */
-  private static final HashMap<String, String[]> encodings = new HashMap<String, String[]>();
+  private static final HashMap<String, String[]> encodings = new HashMap<>();
 
   static {
     //Note: this list should match the set of supported server
@@ -122,7 +122,7 @@ public class Encoding {
   }
 
   /**
-   * Returns true if this encoding has characters '-' and '0'..'9' in exactly same posision as
+   * Returns true if this encoding has characters '-' and '0'..'9' in exactly same position as
    * ascii.
    *
    * @return true if the bytes can be scanned directly for ascii numbers.

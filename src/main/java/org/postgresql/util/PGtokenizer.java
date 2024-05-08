@@ -28,17 +28,17 @@ public class PGtokenizer {
   private static final Map<Character, Character> CLOSING_TO_OPENING_CHARACTER = new HashMap<>();
 
   static 	{
-    CLOSING_TO_OPENING_CHARACTER.put( ')', '(');
+    CLOSING_TO_OPENING_CHARACTER.put(')', '(');
 
-    CLOSING_TO_OPENING_CHARACTER.put( ']', '[');
+    CLOSING_TO_OPENING_CHARACTER.put(']', '[');
 
-    CLOSING_TO_OPENING_CHARACTER.put( '>', '<');
+    CLOSING_TO_OPENING_CHARACTER.put('>', '<');
 
-    CLOSING_TO_OPENING_CHARACTER.put( '"', '"');
+    CLOSING_TO_OPENING_CHARACTER.put('"', '"');
   }
 
   // Our tokens
-  protected List<String> tokens = new ArrayList<String>();
+  protected List<String> tokens = new ArrayList<>();
 
   /**
    * <p>Create a tokeniser.</p>
@@ -49,7 +49,7 @@ public class PGtokenizer {
    * @param string containing tokens
    * @param delim single character to split the tokens
    */
-  @SuppressWarnings("method.invocation.invalid")
+  @SuppressWarnings("method.invocation")
   public PGtokenizer(String string, char delim) {
     tokenize(string, delim);
   }
@@ -77,7 +77,7 @@ public class PGtokenizer {
     int s;
     boolean skipChar = false;
     boolean nestedDoubleQuote = false;
-    char c = (char)0;
+    char c = (char) 0;
     for (p = 0, s = 0; p < string.length(); p++) {
       c = string.charAt(p);
 

@@ -10,20 +10,21 @@ import static org.postgresql.util.internal.Nullness.castNonNull;
 
 // import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Wrapper around a length-limited InputStream.
  *
  * @author Oliver Jowett (oliver@opencloud.com)
  */
-public class StreamWrapper {
+public final class StreamWrapper implements Closeable {
 
   private static final int MAX_MEMORY_BUFFER_BYTES = 51200;
 
@@ -51,90 +52,29 @@ public class StreamWrapper {
 
       if (memoryLength == -1) {
         final int diskLength;
-        final File tempFile = File.createTempFile(TEMP_FILE_PREFIX, null);
-        FileOutputStream diskOutputStream = new FileOutputStream(tempFile);
-        diskOutputStream.write(rawData);
-        try {
+        final Path tempFile = Files.createTempFile(TEMP_FILE_PREFIX, ".tmp");
+        try (OutputStream diskOutputStream = Files.newOutputStream(tempFile)) {
+          diskOutputStream.write(rawData);
           diskLength = copyStream(stream, diskOutputStream, Integer.MAX_VALUE - rawData.length);
           if (diskLength == -1) {
             throw new PSQLException(GT.tr("Object is too large to send over the protocol."),
                 PSQLState.NUMERIC_CONSTANT_OUT_OF_RANGE);
           }
-          diskOutputStream.flush();
-        } finally {
-          diskOutputStream.close();
+        } catch (RuntimeException | Error | PSQLException e) {
+          try {
+            tempFile.toFile().delete();
+          } catch (Throwable ignore) {
+          }
+          throw e;
         }
+        // The finalize action is not created if the above code throws
         this.offset = 0;
         this.length = rawData.length + diskLength;
         this.rawData = null;
-        this.stream = new FileInputStream(tempFile) {
-          /*
-           * Usually, closing stream should be done by pgjdbc clients. Here it's an internally
-           * managed stream so we need to auto-close it and be sure to delete the temporary file
-           * when doing so. Auto-closing will be done when the first occurs: reaching EOF or Garbage
-           * Collection
-           */
-          private boolean closed = false;
-          private int position = 0;
-
-          /**
-           * Check if we should auto-close this stream
-           */
-          private void checkShouldClose(int readResult) throws IOException {
-            if (readResult == -1) {
-              close();
-            } else {
-              position += readResult;
-              if (position >= length) {
-                close();
-              }
-            }
-          }
-
-          public int read(byte[] b) throws IOException {
-            if (closed) {
-              return -1;
-            }
-            int result = super.read(b);
-            checkShouldClose(result);
-            return result;
-          }
-
-          public int read(byte[] b, int off, int len) throws IOException {
-            if (closed) {
-              return -1;
-            }
-            int result = super.read(b, off, len);
-            checkShouldClose(result);
-            return result;
-          }
-
-          public void close() throws IOException {
-            if (!closed) {
-              super.close();
-              tempFile.delete();
-              closed = true;
-            }
-          }
-
-          protected void finalize() throws IOException {
-            // forcibly close it because super.finalize() may keep the FD open, which may prevent
-            // file deletion
-            close();
-            // javac 13 assumes it can throw Throwable
-            try {
-              super.finalize();
-            } catch (RuntimeException e) {
-              throw e;
-            } catch (Error e) {
-              throw e;
-            } catch (IOException e) {
-              throw e;
-            } catch (Throwable e) {
-              throw new RuntimeException("Unexpected exception from finalize", e);
-            }
-          }
-        };
+        this.stream = null; // The stream is opened on demand
+        TempFileHolder tempFileHolder = new TempFileHolder(tempFile);
+        this.tempFileHolder = tempFileHolder;
+        cleaner = LazyCleaner.getInstance().register(leakHandle, tempFileHolder);
       } else {
         this.rawData = rawData;
         this.stream = null;
@@ -147,12 +87,23 @@ public class StreamWrapper {
     }
   }
 
-  public InputStream getStream() {
+  public InputStream getStream() throws IOException {
     if (stream != null) {
       return stream;
     }
+    TempFileHolder finalizeAction = this.tempFileHolder;
+    if (finalizeAction != null) {
+      return finalizeAction.getStream();
+    }
 
-    return new java.io.ByteArrayInputStream(castNonNull(rawData), offset, length);
+    return new ByteArrayInputStream(castNonNull(rawData), offset, length);
+  }
+
+  @Override
+  public void close() throws IOException {
+    if (cleaner != null) {
+      cleaner.clean();
+    }
   }
 
   public int getLength() {
@@ -167,6 +118,7 @@ public class StreamWrapper {
     return rawData;
   }
 
+  @Override
   public String toString() {
     return "<stream of " + length + " bytes>";
   }
@@ -188,6 +140,9 @@ public class StreamWrapper {
   }
 
   private final /* @Nullable */ InputStream stream;
+  private /* @Nullable */ TempFileHolder tempFileHolder;
+  private final Object leakHandle = new Object();
+  private LazyCleaner./* @Nullable */ Cleanable<IOException> cleaner;
   private final byte /* @Nullable */ [] rawData;
   private final int offset;
   private final int length;

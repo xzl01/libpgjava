@@ -33,7 +33,7 @@ public class V3PGReplicationStream implements PGReplicationStream {
   private final long updateInterval;
   private final ReplicationType replicationType;
   private long lastStatusUpdate;
-  private boolean closeFlag = false;
+  private boolean closeFlag;
 
   private LogSequenceNumber lastServerLSN = LogSequenceNumber.INVALID_LSN;
   /**
@@ -42,6 +42,8 @@ public class V3PGReplicationStream implements PGReplicationStream {
   private volatile LogSequenceNumber lastReceiveLSN = LogSequenceNumber.INVALID_LSN;
   private volatile LogSequenceNumber lastAppliedLSN = LogSequenceNumber.INVALID_LSN;
   private volatile LogSequenceNumber lastFlushedLSN = LogSequenceNumber.INVALID_LSN;
+  private volatile LogSequenceNumber startOfLastMessageLSN = LogSequenceNumber.INVALID_LSN;
+  private volatile LogSequenceNumber explicitlyFlushedLSN = LogSequenceNumber.INVALID_LSN;
 
   /**
    * @param copyDual         bidirectional copy protocol
@@ -77,6 +79,7 @@ public class V3PGReplicationStream implements PGReplicationStream {
     return payload;
   }
 
+  @Override
   public /* @Nullable */ ByteBuffer readPending() throws SQLException {
     checkClose();
     return readInternal(false);
@@ -194,6 +197,7 @@ public class V3PGReplicationStream implements PGReplicationStream {
     copyDual.writeToCopy(reply, 0, reply.length);
     copyDual.flushCopy();
 
+    explicitlyFlushedLSN = flushed;
     lastStatusUpdate = System.nanoTime();
   }
 
@@ -230,6 +234,13 @@ public class V3PGReplicationStream implements PGReplicationStream {
     if (lastServerLSN.asLong() > lastReceiveLSN.asLong()) {
       lastReceiveLSN = lastServerLSN;
     }
+    // if the client has confirmed flush of last XLogData msg and KeepAlive shows ServerLSN is still
+    // advancing, we can safely advance FlushLSN to ServerLSN
+    if (explicitlyFlushedLSN.asLong() >= startOfLastMessageLSN.asLong()
+        && lastServerLSN.asLong() > explicitlyFlushedLSN.asLong()
+        && lastServerLSN.asLong() > lastFlushedLSN.asLong()) {
+      lastFlushedLSN = lastServerLSN;
+    }
 
     long lastServerClock = buffer.getLong();
 
@@ -248,17 +259,15 @@ public class V3PGReplicationStream implements PGReplicationStream {
 
   private ByteBuffer processXLogData(ByteBuffer buffer) {
     long startLsn = buffer.getLong();
+    startOfLastMessageLSN = LogSequenceNumber.valueOf(startLsn);
     lastServerLSN = LogSequenceNumber.valueOf(buffer.getLong());
     long systemClock = buffer.getLong();
 
-    switch (replicationType) {
-      case LOGICAL:
-        lastReceiveLSN = LogSequenceNumber.valueOf(startLsn);
-        break;
-      case PHYSICAL:
-        int payloadSize = buffer.limit() - buffer.position();
-        lastReceiveLSN = LogSequenceNumber.valueOf(startLsn + payloadSize);
-        break;
+    if (replicationType == ReplicationType.LOGICAL) {
+      lastReceiveLSN = LogSequenceNumber.valueOf(startLsn);
+    } else if (replicationType == ReplicationType.PHYSICAL) {
+      int payloadSize = buffer.limit() - buffer.position();
+      lastReceiveLSN = LogSequenceNumber.valueOf(startLsn + payloadSize);
     }
 
     if (LOGGER.isLoggable(Level.FINEST)) {
@@ -276,6 +285,7 @@ public class V3PGReplicationStream implements PGReplicationStream {
     }
   }
 
+  @Override
   public void close() throws SQLException {
     if (isClosed()) {
       return;

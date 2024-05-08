@@ -22,7 +22,7 @@ public class ByteConverter {
    */
   private static final class PositiveShorts {
     private short[] shorts = new short[8];
-    private int idx = 0;
+    private int idx;
 
     PositiveShorts() {
     }
@@ -68,13 +68,13 @@ public class ByteConverter {
   private static final BigInteger BI_MAX_LONG = BigInteger.valueOf(Long.MAX_VALUE);
 
   static {
-    for (int i = 0; i < INT_TEN_POWERS.length; ++i) {
+    for (int i = 0; i < INT_TEN_POWERS.length; i++) {
       INT_TEN_POWERS[i] = (int) Math.pow(10, i);
     }
-    for (int i = 0; i < LONG_TEN_POWERS.length; ++i) {
+    for (int i = 0; i < LONG_TEN_POWERS.length; i++) {
       LONG_TEN_POWERS[i] = (long) Math.pow(10, i);
     }
-    for (int i = 0; i < BI_TEN_POWERS.length; ++i) {
+    for (int i = 0; i < BI_TEN_POWERS.length; i++) {
       BI_TEN_POWERS[i] = BigInteger.TEN.pow(i);
     }
   }
@@ -90,7 +90,7 @@ public class ByteConverter {
    */
   public static int bytesToInt(byte []bytes) {
     if ( bytes.length == 1 ) {
-      return (int)bytes[0];
+      return (int) bytes[0];
     }
     if ( bytes.length == SHORT_BYTES ) {
       return int2(bytes, 0);
@@ -127,8 +127,8 @@ public class ByteConverter {
       throw new IllegalArgumentException("number of bytes should be at-least 8");
     }
 
-    //number of 2-byte shorts representing 4 decimal digits
-    short len = ByteConverter.int2(bytes, pos);
+    //number of 2-byte shorts representing 4 decimal digits - should be treated as unsigned
+    int len = ByteConverter.int2(bytes, pos) & 0xFFFF;
     //0 based number of 4 decimal digits (i.e. 2-byte shorts) before the decimal
     //a value <= 0 indicates an absolute value < 1.
     short weight = ByteConverter.int2(bytes, pos + 2);
@@ -184,35 +184,45 @@ public class ByteConverter {
     if (weight < 0) {
       assert scale > 0;
       int effectiveScale = scale;
+      //adjust weight to determine how many leading 0s after the decimal
+      //before the provided values/digits actually begin
       ++weight;
       if (weight < 0) {
-        effectiveScale += (4 * weight);
+        effectiveScale += 4 * weight;
       }
 
       int i = 1;
       //typically there should not be leading 0 short values, as it is more
       //efficient to represent that in the weight value
-      for ( ; i < len && d == 0; ++i) {
+      for (; i < len && d == 0; i++) {
+        //each leading 0 value removes 4 from the effective scale
         effectiveScale -= 4;
         idx += 2;
         d = ByteConverter.int2(bytes, idx);
       }
 
-      BigInteger unscaledBI = null;
       assert effectiveScale > 0;
       if (effectiveScale >= 4) {
         effectiveScale -= 4;
       } else {
+        //an effective scale of less than four means that the value d
+        //has trailing 0s which are not significant
+        //so we divide by the appropriate power of 10 to reduce those
         d = (short) (d / INT_TEN_POWERS[4 - effectiveScale]);
         effectiveScale = 0;
       }
+      //defer moving to BigInteger as long as possible
+      //operations on the long are much faster
+      BigInteger unscaledBI = null;
       long unscaledInt = d;
-      for ( ; i < len; ++i) {
+      for (; i < len; i++) {
         if (i == 4 && effectiveScale > 2) {
           unscaledBI = BigInteger.valueOf(unscaledInt);
         }
         idx += 2;
         d = ByteConverter.int2(bytes, idx);
+        //if effective scale is at least 4, then all 4 digits should be used
+        //and the existing number needs to be shifted 4
         if (effectiveScale >= 4) {
           if (unscaledBI == null) {
             unscaledInt *= 10000;
@@ -221,11 +231,14 @@ public class ByteConverter {
           }
           effectiveScale -= 4;
         } else {
+          //if effective scale is less than 4, then only shift left based on remaining scale
           if (unscaledBI == null) {
             unscaledInt *= INT_TEN_POWERS[effectiveScale];
           } else {
             unscaledBI = unscaledBI.multiply(tenPower(effectiveScale));
           }
+          //and d needs to be shifted to the right to only get correct number of
+          //significant digits
           d = (short) (d / INT_TEN_POWERS[4 - effectiveScale]);
           effectiveScale = 0;
         }
@@ -237,9 +250,11 @@ public class ByteConverter {
           }
         }
       }
+      //now we need BigInteger to create BigDecimal
       if (unscaledBI == null) {
         unscaledBI = BigInteger.valueOf(unscaledInt);
       }
+      //if there is remaining effective scale, apply it here
       if (effectiveScale > 0) {
         unscaledBI = unscaledBI.multiply(tenPower(effectiveScale));
       }
@@ -252,9 +267,12 @@ public class ByteConverter {
 
     //if there is no scale, then shorts are the unscaled int
     if (scale == 0) {
+      //defer moving to BigInteger as long as possible
+      //operations on the long are much faster
       BigInteger unscaledBI = null;
       long unscaledInt = d;
-      for (int i = 1; i < len; ++i) {
+      //loop over all of the len shorts to process as the unscaled int
+      for (int i = 1; i < len; i++) {
         if (i == 4) {
           unscaledBI = BigInteger.valueOf(unscaledInt);
         }
@@ -270,12 +288,14 @@ public class ByteConverter {
           }
         }
       }
+      //now we need BigInteger to create BigDecimal
       if (unscaledBI == null) {
         unscaledBI = BigInteger.valueOf(unscaledInt);
       }
       if (sign == NUMERIC_NEG) {
         unscaledBI = unscaledBI.negate();
       }
+      //the difference between len and weight (adjusted from 0 based) becomes the scale for BigDecimal
       final int bigDecScale = (len - (weight + 1)) * 4;
       //string representation always results in a BigDecimal with scale of 0
       //the binary representation, where weight and len can infer trailing 0s, can result in a negative scale
@@ -283,16 +303,21 @@ public class ByteConverter {
       return bigDecScale == 0 ? new BigDecimal(unscaledBI) : new BigDecimal(unscaledBI, bigDecScale).setScale(0);
     }
 
+    //defer moving to BigInteger as long as possible
+    //operations on the long are much faster
     BigInteger unscaledBI = null;
     long unscaledInt = d;
+    //weight and scale as defined by postgresql are a bit different than how BigDecimal treats scale
+    //maintain the effective values to massage as we process through values
     int effectiveWeight = weight;
     int effectiveScale = scale;
-    for (int i = 1 ; i < len; ++i) {
+    for (int i = 1; i < len; i++) {
       if (i == 4) {
         unscaledBI = BigInteger.valueOf(unscaledInt);
       }
       idx += 2;
       d = ByteConverter.int2(bytes, idx);
+      //first process effective weight down to 0
       if (effectiveWeight > 0) {
         --effectiveWeight;
         if (unscaledBI == null) {
@@ -301,6 +326,8 @@ public class ByteConverter {
           unscaledBI = unscaledBI.multiply(BI_TEN_THOUSAND);
         }
       } else if (effectiveScale >= 4) {
+        //if effective scale is at least 4, then all 4 digits should be used
+        //and the existing number needs to be shifted 4
         effectiveScale -= 4;
         if (unscaledBI == null) {
           unscaledInt *= 10000;
@@ -308,11 +335,14 @@ public class ByteConverter {
           unscaledBI = unscaledBI.multiply(BI_TEN_THOUSAND);
         }
       } else {
+        //if effective scale is less than 4, then only shift left based on remaining scale
         if (unscaledBI == null) {
           unscaledInt *= INT_TEN_POWERS[effectiveScale];
         } else {
           unscaledBI = unscaledBI.multiply(tenPower(effectiveScale));
         }
+        //and d needs to be shifted to the right to only get correct number of
+        //significant digits
         d = (short) (d / INT_TEN_POWERS[4 - effectiveScale]);
         effectiveScale = 0;
       }
@@ -325,12 +355,15 @@ public class ByteConverter {
       }
     }
 
+    //now we need BigInteger to create BigDecimal
     if (unscaledBI == null) {
       unscaledBI = BigInteger.valueOf(unscaledInt);
     }
+    //if there is remaining weight, apply it here
     if (effectiveWeight > 0) {
       unscaledBI = unscaledBI.multiply(tenPower(effectiveWeight * 4));
     }
+    //if there is remaining effective scale, apply it here
     if (effectiveScale > 0) {
       unscaledBI = unscaledBI.multiply(tenPower(effectiveScale));
     }
@@ -351,7 +384,7 @@ public class ByteConverter {
     BigInteger unscaled = nbr.unscaledValue().abs();
     int scale = nbr.scale();
     if (unscaled.equals(BigInteger.ZERO)) {
-      final byte[] bytes = new byte[] {0,0,-1,-1,0,0,0,0};
+      final byte[] bytes = new byte[]{0, 0, -1, -1, 0, 0, 0, 0};
       ByteConverter.int2(bytes, 6, Math.max(0, scale));
       return bytes;
     }
@@ -415,7 +448,7 @@ public class ByteConverter {
           weight -= segments;
         } else {
           //now add leading 0 shorts
-          for (int i = 0; i < segments; ++i) {
+          for (int i = 0; i < segments; i++) {
             shorts.push((short) 0);
           }
         }
@@ -493,7 +526,7 @@ public class ByteConverter {
         ((bytes[idx] & 255) << 24)
             + ((bytes[idx + 1] & 255) << 16)
             + ((bytes[idx + 2] & 255) << 8)
-            + ((bytes[idx + 3] & 255));
+            + (bytes[idx + 3] & 255);
   }
 
   /**
@@ -504,7 +537,7 @@ public class ByteConverter {
    * @return parsed short value.
    */
   public static short int2(byte[] bytes, int idx) {
-    return (short) (((bytes[idx] & 255) << 8) + ((bytes[idx + 1] & 255)));
+    return (short) (((bytes[idx] & 255) << 8) + (bytes[idx + 1] & 255));
   }
 
   /**

@@ -57,7 +57,7 @@ public class PGobject implements Serializable, Cloneable {
   }
 
   /**
-   * This must be overidden, to return the value of the object, in the form required by
+   * This must be overridden, to return the value of the object, in the form required by
    * org.postgresql.
    *
    * @return the value of this object
@@ -73,15 +73,16 @@ public class PGobject implements Serializable, Cloneable {
    * @return true if the current object wraps `null` value.
    */
   public boolean isNull() {
-    return getValue() != null;
+    return getValue() == null;
   }
 
   /**
-   * This must be overidden to allow comparisons of objects.
+   * This must be overridden to allow comparisons of objects.
    *
    * @param obj Object to compare with
    * @return true if the two boxes are identical
    */
+  @Override
   public boolean equals(/* @Nullable */ Object obj) {
     if (obj instanceof PGobject) {
       final Object otherValue = ((PGobject) obj).getValue();
@@ -95,17 +96,18 @@ public class PGobject implements Serializable, Cloneable {
   }
 
   /**
-   * This must be overidden to allow the object to be cloned.
+   * This must be overridden to allow the object to be cloned.
    */
   public Object clone() throws CloneNotSupportedException {
     return super.clone();
   }
 
   /**
-   * This is defined here, so user code need not overide it.
+   * This is defined here, so user code need not override it.
    *
    * @return the value of this object, in the syntax expected by org.postgresql
    */
+  @Override
   @SuppressWarnings("nullness")
   public String toString() {
     return getValue();

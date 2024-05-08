@@ -5,13 +5,11 @@
 
 package org.postgresql.test.jdbc4;
 
-import org.postgresql.test.SlowTests;
 import org.postgresql.test.TestUtil;
 import org.postgresql.test.jdbc2.BaseTest4;
 
 import org.junit.Assert;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 
 import java.io.ByteArrayInputStream;
 import java.nio.ByteBuffer;
@@ -53,7 +51,7 @@ public class BinaryStreamTest extends BaseTest4 {
     }
   }
 
-  private void insertStreamUnkownLength(byte[] data) throws Exception {
+  private void insertStreamUnknownLength(byte[] data) throws Exception {
     PreparedStatement updatePS = con.prepareStatement(TestUtil.insertSQL("images", "img", "?"));
     try {
       updatePS.setBinaryStream(1, new ByteArrayInputStream(data));
@@ -115,7 +113,6 @@ public class BinaryStreamTest extends BaseTest4 {
   }
 
   @Test
-  @Category(SlowTests.class)
   public void testKnownLength100Kb() throws Exception {
     byte[] data = getTestData(100 * 1024);
     insertStreamKownLength(data);
@@ -123,7 +120,6 @@ public class BinaryStreamTest extends BaseTest4 {
   }
 
   @Test
-  @Category(SlowTests.class)
   public void testKnownLength200Kb() throws Exception {
     byte[] data = getTestData(200 * 1024);
     insertStreamKownLength(data);
@@ -133,37 +129,35 @@ public class BinaryStreamTest extends BaseTest4 {
   @Test
   public void testUnknownLengthEmpty() throws Exception {
     byte[] data = getTestData(2 * 1024);
-    insertStreamUnkownLength(data);
+    insertStreamUnknownLength(data);
     validateContent(data);
   }
 
   @Test
   public void testUnknownLength2Kb() throws Exception {
     byte[] data = getTestData(2 * 1024);
-    insertStreamUnkownLength(data);
+    insertStreamUnknownLength(data);
     validateContent(data);
   }
 
   @Test
   public void testUnknownLength10Kb() throws Exception {
     byte[] data = getTestData(10 * 1024);
-    insertStreamUnkownLength(data);
+    insertStreamUnknownLength(data);
     validateContent(data);
   }
 
   @Test
-  @Category(SlowTests.class)
   public void testUnknownLength100Kb() throws Exception {
     byte[] data = getTestData(100 * 1024);
-    insertStreamUnkownLength(data);
+    insertStreamUnknownLength(data);
     validateContent(data);
   }
 
   @Test
-  @Category(SlowTests.class)
   public void testUnknownLength200Kb() throws Exception {
     byte[] data = getTestData(200 * 1024);
-    insertStreamUnkownLength(data);
+    insertStreamUnknownLength(data);
     validateContent(data);
   }
 }

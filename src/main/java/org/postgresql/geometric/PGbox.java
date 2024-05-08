@@ -51,7 +51,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
    * @param s Box definition in PostgreSQL syntax
    * @throws SQLException if definition is invalid
    */
-  @SuppressWarnings("method.invocation.invalid")
+  @SuppressWarnings("method.invocation")
   public PGbox(String s) throws SQLException {
     this();
     setValue(s);
@@ -65,7 +65,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
   }
 
   /**
-   * This method sets the value of this object. It should be overidden, but still called by
+   * This method sets the value of this object. It should be overridden, but still called by
    * subclasses.
    *
    * @param value a string representation of the value of the object
@@ -95,6 +95,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
   /**
    * @param b Definition of this point in PostgreSQL's binary syntax
    */
+  @Override
   public void setByteValue(byte[] b, int offset) {
     PGpoint[] point = this.point;
     if (point == null) {
@@ -111,6 +112,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
    * @param obj Object to compare with
    * @return true if the two boxes are identical
    */
+  @Override
   public boolean equals(/* @Nullable */ Object obj) {
     if (obj instanceof PGbox) {
       PGbox p = (PGbox) obj;
@@ -151,6 +153,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
     return false;
   }
 
+  @Override
   public int hashCode() {
     // This relies on the behaviour of point's hashcode being an exclusive-OR of
     // its X and Y components; we end up with an exclusive-OR of the two X and
@@ -160,11 +163,12 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
     return point == null ? 0 : point[0].hashCode() ^ point[1].hashCode();
   }
 
+  @Override
   public Object clone() throws CloneNotSupportedException {
     PGbox newPGbox = (PGbox) super.clone();
     if (newPGbox.point != null) {
       newPGbox.point = newPGbox.point.clone();
-      for (int i = 0; i < newPGbox.point.length; ++i) {
+      for (int i = 0; i < newPGbox.point.length; i++) {
         if (newPGbox.point[i] != null) {
           newPGbox.point[i] = (PGpoint) newPGbox.point[i].clone();
         }
@@ -176,11 +180,13 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
   /**
    * @return the PGbox in the syntax expected by org.postgresql
    */
+  @Override
   public /* @Nullable */ String getValue() {
     PGpoint[] point = this.point;
     return point == null ? null : point[0].toString() + "," + point[1].toString();
   }
 
+  @Override
   public int lengthInBytes() {
     PGpoint[] point = this.point;
     if (point == null) {
@@ -189,6 +195,7 @@ public class PGbox extends PGobject implements PGBinaryObject, Serializable, Clo
     return point[0].lengthInBytes() + point[1].lengthInBytes();
   }
 
+  @Override
   public void toBytes(byte[] bytes, int offset) {
     PGpoint[] point = castNonNull(this.point);
     point[0].toBytes(bytes, offset);

@@ -68,7 +68,7 @@ public class Utils {
     try {
       if (standardConformingStrings) {
         // With standard_conforming_strings on, escape only single-quotes.
-        for (int i = 0; i < value.length(); ++i) {
+        for (int i = 0; i < value.length(); i++) {
           char ch = value.charAt(i);
           if (ch == '\0') {
             throw new PSQLException(GT.tr("Zero bytes may not occur in string parameters."),
@@ -85,7 +85,7 @@ public class Utils {
         // avoid a security hazard if the reported value of
         // standard_conforming_strings is incorrect, or an error if
         // backslash_quote is off.
-        for (int i = 0; i < value.length(); ++i) {
+        for (int i = 0; i < value.length(); i++) {
           char ch = value.charAt(i);
           if (ch == '\0') {
             throw new PSQLException(GT.tr("Zero bytes may not occur in string parameters."),
@@ -134,7 +134,7 @@ public class Utils {
     try {
       sbuf.append('"');
 
-      for (int i = 0; i < value.length(); ++i) {
+      for (int i = 0; i < value.length(); i++) {
         char ch = value.charAt(i);
         if (ch == '\0') {
           throw new PSQLException(GT.tr("Zero bytes may not occur in identifiers."),
@@ -167,7 +167,7 @@ public class Utils {
    * <p>The yy or zz version parts may be larger than 99. A NumberFormatException is thrown if a
    * version part is out of range.</p>
    *
-   * @param serverVersion server vertion in a XXYYZZ form
+   * @param serverVersion server version in a XXYYZZ form
    * @return server version in number form
    * @deprecated use specific {@link Version} instance
    */

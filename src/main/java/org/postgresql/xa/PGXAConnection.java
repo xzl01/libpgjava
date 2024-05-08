@@ -124,10 +124,10 @@ public class PGXAConnection extends PGPooledConnection implements XAConnection, 
     public /* @Nullable */ Object invoke(Object proxy, Method method, /* @Nullable */ Object[] args) throws Throwable {
       if (state != State.IDLE) {
         String methodName = method.getName();
-        if (methodName.equals("commit")
-            || methodName.equals("rollback")
-            || methodName.equals("setSavePoint")
-            || (methodName.equals("setAutoCommit") && castNonNull((Boolean) args[0]))) {
+        if ("commit".equals(methodName)
+            || "rollback".equals(methodName)
+            || "setSavePoint".equals(methodName)
+            || ("setAutoCommit".equals(methodName) && castNonNull((Boolean) args[0]))) {
           throw new PSQLException(
               GT.tr(
                   "Transaction control methods setAutoCommit(true), commit, rollback and setSavePoint not allowed while an XA transaction is active."),
@@ -139,7 +139,7 @@ public class PGXAConnection extends PGPooledConnection implements XAConnection, 
          * If the argument to equals-method is also a wrapper, present the original unwrapped
          * connection to the underlying equals method.
          */
-        if (method.getName().equals("equals") && args.length == 1) {
+        if ("equals".equals(method.getName()) && args.length == 1) {
           Object arg = args[0];
           if (arg != null && Proxy.isProxyClass(arg.getClass())) {
             InvocationHandler h = Proxy.getInvocationHandler(arg);
@@ -404,7 +404,7 @@ public class PGXAConnection extends PGPooledConnection implements XAConnection, 
           // in practise.
           ResultSet rs = stmt.executeQuery(
               "SELECT gid FROM pg_prepared_xacts where database = current_database()");
-          LinkedList<Xid> l = new LinkedList<Xid>();
+          LinkedList<Xid> l = new LinkedList<>();
           while (rs.next()) {
             Xid recoveredXid = RecoveredXid.stringToXid(castNonNull(rs.getString(1)));
             if (recoveredXid != null) {
@@ -482,7 +482,7 @@ public class PGXAConnection extends PGPooledConnection implements XAConnection, 
         }
         errorCode = XAException.XAER_RMFAIL;
       }
-      throw new PGXAException(GT.tr("Error rolling back prepared transaction. rollback xid={0}, preparedXid={1}, currentXid={2}", xid, preparedXid), ex, errorCode);
+      throw new PGXAException(GT.tr("Error rolling back prepared transaction. rollback xid={0}, preparedXid={1}, currentXid={2}", xid, preparedXid, currentXid), ex, errorCode);
     }
   }
 

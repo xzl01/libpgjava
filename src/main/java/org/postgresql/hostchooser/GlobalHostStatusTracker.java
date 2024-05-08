@@ -5,6 +5,7 @@
 
 package org.postgresql.hostchooser;
 
+import org.postgresql.jdbc.ResourceLock;
 import org.postgresql.util.HostSpec;
 
 // import org.checkerframework.checker.nullness.qual.Nullable;
@@ -19,7 +20,8 @@ import java.util.Map;
  */
 public class GlobalHostStatusTracker {
   private static final Map<HostSpec, HostSpecStatus> hostStatusMap =
-      new HashMap<HostSpec, HostSpecStatus>();
+      new HashMap<>();
+  private static final ResourceLock lock = new ResourceLock();
 
   /**
    * Store the actual observed host status.
@@ -29,7 +31,7 @@ public class GlobalHostStatusTracker {
    */
   public static void reportHostStatus(HostSpec hostSpec, HostStatus hostStatus) {
     long now = System.nanoTime() / 1000000;
-    synchronized (hostStatusMap) {
+    try (ResourceLock ignore = lock.obtain()) {
       HostSpecStatus hostSpecStatus = hostStatusMap.get(hostSpec);
       if (hostSpecStatus == null) {
         hostSpecStatus = new HostSpecStatus(hostSpec);
@@ -50,9 +52,9 @@ public class GlobalHostStatusTracker {
    */
   static List<HostSpec> getCandidateHosts(HostSpec[] hostSpecs,
       HostRequirement targetServerType, long hostRecheckMillis) {
-    List<HostSpec> candidates = new ArrayList<HostSpec>(hostSpecs.length);
+    List<HostSpec> candidates = new ArrayList<>(hostSpecs.length);
     long latestAllowedUpdate = System.nanoTime() / 1000000 - hostRecheckMillis;
-    synchronized (hostStatusMap) {
+    try (ResourceLock ignore = lock.obtain()) {
       for (HostSpec hostSpec : hostSpecs) {
         HostSpecStatus hostInfo = hostStatusMap.get(hostSpec);
         // candidates are nodes we do not know about and the nodes with correct type

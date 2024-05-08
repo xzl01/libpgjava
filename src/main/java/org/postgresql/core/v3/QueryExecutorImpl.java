@@ -17,6 +17,7 @@ import org.postgresql.core.Encoding;
 import org.postgresql.core.EncodingPredictor;
 import org.postgresql.core.Field;
 import org.postgresql.core.NativeQuery;
+import org.postgresql.core.Notification;
 import org.postgresql.core.Oid;
 import org.postgresql.core.PGBindException;
 import org.postgresql.core.PGStream;
@@ -38,6 +39,7 @@ import org.postgresql.core.v3.adaptivefetch.AdaptiveFetchCache;
 import org.postgresql.core.v3.replication.V3ReplicationProtocol;
 import org.postgresql.jdbc.AutoSave;
 import org.postgresql.jdbc.BatchResultHandler;
+import org.postgresql.jdbc.ResourceLock;
 import org.postgresql.jdbc.TimestampUtils;
 import org.postgresql.util.ByteStreamWriter;
 import org.postgresql.util.GT;
@@ -46,7 +48,6 @@ import org.postgresql.util.PSQLState;
 import org.postgresql.util.PSQLWarning;
 import org.postgresql.util.ServerErrorMessage;
 
-// import org.checkerframework.checker.nullness.qual.NonNull;
 // import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.io.IOException;
@@ -66,6 +67,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
@@ -99,6 +101,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     Encoding.canonicalize("TimeZone");
     Encoding.canonicalize("UTF8");
     Encoding.canonicalize("UTF-8");
+    Encoding.canonicalize("in_hot_standby");
   }
 
   /**
@@ -119,18 +122,18 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   /**
    * Bit set that has a bit set for each oid which should be received using binary format.
    */
-  private final Set<Integer> useBinaryReceiveForOids = new HashSet<Integer>();
+  private final Set<Integer> useBinaryReceiveForOids = new HashSet<>();
 
   /**
    * Bit set that has a bit set for each oid which should be sent using binary format.
    */
-  private final Set<Integer> useBinarySendForOids = new HashSet<Integer>();
+  private final Set<Integer> useBinarySendForOids = new HashSet<>();
 
   /**
    * This is a fake query object so processResults can distinguish "ReadyForQuery" messages
    * from Sync messages vs from simple execute (aka 'Q').
    */
-  @SuppressWarnings("method.invocation.invalid")
+  @SuppressWarnings("method.invocation")
   private final SimpleQuery sync = (SimpleQuery) createQuery("SYNC", false, true).query;
 
   private short deallocateEpoch;
@@ -156,18 +159,18 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
   private final AdaptiveFetchCache adaptiveFetchCache;
 
-  @SuppressWarnings({"assignment.type.incompatible", "argument.type.incompatible",
-      "method.invocation.invalid"})
-  public QueryExecutorImpl(PGStream pgStream, String user, String database,
+  @SuppressWarnings({"assignment", "argument",
+      "method.invocation"})
+  public QueryExecutorImpl(PGStream pgStream,
       int cancelSignalTimeout, Properties info) throws SQLException, IOException {
-    super(pgStream, user, database, cancelSignalTimeout, info);
+    super(pgStream, cancelSignalTimeout, info);
 
     long maxResultBuffer = pgStream.getMaxResultBuffer();
     this.adaptiveFetchCache = new AdaptiveFetchCache(maxResultBuffer, info);
 
     this.allowEncodingChanges = PGProperty.ALLOW_ENCODING_CHANGES.getBoolean(info);
     this.cleanupSavePoints = PGProperty.CLEANUP_SAVEPOINTS.getBoolean(info);
-    // assignment.type.incompatible, argument.type.incompatible
+    // assignment, argument
     this.replicationProtocol = new V3ReplicationProtocol(this, pgStream);
     readStartupMessages();
   }
@@ -219,7 +222,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
           PSQLState.OBJECT_NOT_IN_STATE);
     }
     lockedFor = null;
-    this.notify();
+    lockCondition.signal();
   }
 
   /**
@@ -229,7 +232,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   private void waitOnLock() throws PSQLException {
     while (lockedFor != null) {
       try {
-        this.wait();
+        lockCondition.await();
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         throw new PSQLException(
@@ -243,7 +246,17 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @param holder object assumed to hold the lock
    * @return whether given object actually holds the lock
    */
-  boolean hasLock(/* @Nullable */ Object holder) {
+  boolean hasLockOn(/* @Nullable */ Object holder) {
+    try (ResourceLock ignore = lock.obtain()) {
+      return lockedFor == holder;
+    }
+  }
+
+  /**
+   * @param holder object assumed to hold the lock
+   * @return whether given object actually holds the lock
+   */
+  private boolean hasLock(/* @Nullable */ Object holder) {
     return lockedFor == holder;
   }
 
@@ -251,6 +264,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   // Query parsing
   //
 
+  @Override
   public Query createSimpleQuery(String sql) throws SQLException {
     List<NativeQuery> queries = Parser.parseJdbcSql(sql,
         getStandardConformingStrings(), false, true,
@@ -283,7 +297,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     SimpleQuery[] subqueries = new SimpleQuery[queries.size()];
     int[] offsets = new int[subqueries.length];
     int offset = 0;
-    for (int i = 0; i < queries.size(); ++i) {
+    for (int i = 0; i < queries.size(); i++) {
       NativeQuery nativeQuery = queries.get(i);
       offsets[i] = offset;
       subqueries[i] = new SimpleQuery(nativeQuery, this, isColumnSanitiserDisabled());
@@ -308,87 +322,91 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     }
   }
 
-  public synchronized void execute(Query query, /* @Nullable */ ParameterList parameters,
+  @Override
+  public void execute(Query query, /* @Nullable */ ParameterList parameters,
       ResultHandler handler,
       int maxRows, int fetchSize, int flags) throws SQLException {
     execute(query, parameters, handler, maxRows, fetchSize, flags, false);
   }
 
-  public synchronized void execute(Query query, /* @Nullable */ ParameterList parameters,
+  @Override
+  public void execute(Query query, /* @Nullable */ ParameterList parameters,
       ResultHandler handler,
       int maxRows, int fetchSize, int flags, boolean adaptiveFetch) throws SQLException {
-    waitOnLock();
-    if (LOGGER.isLoggable(Level.FINEST)) {
-      LOGGER.log(Level.FINEST, "  simple execute, handler={0}, maxRows={1}, fetchSize={2}, flags={3}",
-          new Object[]{handler, maxRows, fetchSize, flags});
-    }
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      if (LOGGER.isLoggable(Level.FINEST)) {
+        LOGGER.log(Level.FINEST, "  simple execute, handler={0}, maxRows={1}, fetchSize={2}, flags={3}",
+            new Object[]{handler, maxRows, fetchSize, flags});
+      }
 
-    if (parameters == null) {
-      parameters = SimpleQuery.NO_PARAMETERS;
-    }
+      if (parameters == null) {
+        parameters = SimpleQuery.NO_PARAMETERS;
+      }
 
-    flags = updateQueryMode(flags);
+      flags = updateQueryMode(flags);
 
-    boolean describeOnly = (QUERY_DESCRIBE_ONLY & flags) != 0;
+      boolean describeOnly = (QUERY_DESCRIBE_ONLY & flags) != 0;
 
-    ((V3ParameterList) parameters).convertFunctionOutParameters();
+      ((V3ParameterList) parameters).convertFunctionOutParameters();
 
-    // Check parameters are all set..
-    if (!describeOnly) {
-      ((V3ParameterList) parameters).checkAllParametersSet();
-    }
+      // Check parameters are all set..
+      if (!describeOnly) {
+        ((V3ParameterList) parameters).checkAllParametersSet();
+      }
 
-    boolean autosave = false;
-    try {
+      boolean autosave = false;
       try {
-        handler = sendQueryPreamble(handler, flags);
-        autosave = sendAutomaticSavepoint(query, flags);
-        sendQuery(query, (V3ParameterList) parameters, maxRows, fetchSize, flags,
-            handler, null, adaptiveFetch);
-        if ((flags & QueryExecutor.QUERY_EXECUTE_AS_SIMPLE) != 0) {
-          // Sync message is not required for 'Q' execution as 'Q' ends with ReadyForQuery message
-          // on its own
-        } else {
+        try {
+          handler = sendQueryPreamble(handler, flags);
+          autosave = sendAutomaticSavepoint(query, flags);
+          sendQuery(query, (V3ParameterList) parameters, maxRows, fetchSize, flags,
+              handler, null, adaptiveFetch);
+          if ((flags & QueryExecutor.QUERY_EXECUTE_AS_SIMPLE) != 0) {
+            // Sync message is not required for 'Q' execution as 'Q' ends with ReadyForQuery message
+            // on its own
+          } else {
+            sendSync();
+          }
+          processResults(handler, flags, adaptiveFetch);
+          estimatedReceiveBufferBytes = 0;
+        } catch (PGBindException se) {
+          // There are three causes of this error, an
+          // invalid total Bind message length, a
+          // BinaryStream that cannot provide the amount
+          // of data claimed by the length argument, and
+          // a BinaryStream that throws an Exception
+          // when reading.
+          //
+          // We simply do not send the Execute message
+          // so we can just continue on as if nothing
+          // has happened. Perhaps we need to
+          // introduce an error here to force the
+          // caller to rollback if there is a
+          // transaction in progress?
+          //
           sendSync();
+          processResults(handler, flags, adaptiveFetch);
+          estimatedReceiveBufferBytes = 0;
+          handler
+              .handleError(new PSQLException(GT.tr("Unable to bind parameter values for statement."),
+                  PSQLState.INVALID_PARAMETER_VALUE, se.getIOException()));
         }
-        processResults(handler, flags, adaptiveFetch);
-        estimatedReceiveBufferBytes = 0;
-      } catch (PGBindException se) {
-        // There are three causes of this error, an
-        // invalid total Bind message length, a
-        // BinaryStream that cannot provide the amount
-        // of data claimed by the length argument, and
-        // a BinaryStream that throws an Exception
-        // when reading.
-        //
-        // We simply do not send the Execute message
-        // so we can just continue on as if nothing
-        // has happened. Perhaps we need to
-        // introduce an error here to force the
-        // caller to rollback if there is a
-        // transaction in progress?
-        //
-        sendSync();
-        processResults(handler, flags, adaptiveFetch);
-        estimatedReceiveBufferBytes = 0;
-        handler
-            .handleError(new PSQLException(GT.tr("Unable to bind parameter values for statement."),
-                PSQLState.INVALID_PARAMETER_VALUE, se.getIOException()));
+      } catch (IOException e) {
+        abort();
+        handler.handleError(
+            new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
+                PSQLState.CONNECTION_FAILURE, e));
       }
-    } catch (IOException e) {
-      abort();
-      handler.handleError(
-          new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
-              PSQLState.CONNECTION_FAILURE, e));
-    }
 
-    try {
-      handler.handleCompletion();
-      if (cleanupSavePoints) {
-        releaseSavePoint(autosave, flags);
+      try {
+        handler.handleCompletion();
+        if (cleanupSavePoints) {
+          releaseSavePoint(autosave, flags);
+        }
+      } catch (SQLException e) {
+        rollbackIfRequired(autosave, e);
       }
-    } catch (SQLException e) {
-      rollbackIfRequired(autosave, e);
     }
   }
 
@@ -396,7 +414,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     if (((flags & QueryExecutor.QUERY_SUPPRESS_BEGIN) == 0
         || getTransactionState() == TransactionState.OPEN)
         && query != restoreToAutoSave
-        && !query.getNativeSql().equalsIgnoreCase("COMMIT")
+        && !"COMMIT".equalsIgnoreCase(query.getNativeSql())
         && getAutoSave() != AutoSave.NEVER
         // If query has no resulting fields, it cannot fail with 'cached plan must not change result type'
         // thus no need to set a savepoint before such query
@@ -501,77 +519,81 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   private static final int MAX_BUFFERED_RECV_BYTES = 64000;
   private static final int NODATA_QUERY_RESPONSE_SIZE_BYTES = 250;
 
-  public synchronized void execute(Query[] queries, /* @Nullable */ ParameterList[] parameterLists,
+  @Override
+  public void execute(Query[] queries, /* @Nullable */ ParameterList[] parameterLists,
       BatchResultHandler batchHandler, int maxRows, int fetchSize, int flags) throws SQLException {
     execute(queries, parameterLists, batchHandler, maxRows, fetchSize, flags, false);
   }
 
-  public synchronized void execute(Query[] queries, /* @Nullable */ ParameterList[] parameterLists,
+  @Override
+  public void execute(Query[] queries, /* @Nullable */ ParameterList[] parameterLists,
       BatchResultHandler batchHandler, int maxRows, int fetchSize, int flags, boolean adaptiveFetch)
       throws SQLException {
-    waitOnLock();
-    if (LOGGER.isLoggable(Level.FINEST)) {
-      LOGGER.log(Level.FINEST, "  batch execute {0} queries, handler={1}, maxRows={2}, fetchSize={3}, flags={4}",
-          new Object[]{queries.length, batchHandler, maxRows, fetchSize, flags});
-    }
-
-    flags = updateQueryMode(flags);
-
-    boolean describeOnly = (QUERY_DESCRIBE_ONLY & flags) != 0;
-    // Check parameters and resolve OIDs.
-    if (!describeOnly) {
-      for (ParameterList parameterList : parameterLists) {
-        if (parameterList != null) {
-          ((V3ParameterList) parameterList).checkAllParametersSet();
-        }
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      if (LOGGER.isLoggable(Level.FINEST)) {
+        LOGGER.log(Level.FINEST, "  batch execute {0} queries, handler={1}, maxRows={2}, fetchSize={3}, flags={4}",
+            new Object[]{queries.length, batchHandler, maxRows, fetchSize, flags});
       }
-    }
 
-    boolean autosave = false;
-    ResultHandler handler = batchHandler;
-    try {
-      handler = sendQueryPreamble(batchHandler, flags);
-      autosave = sendAutomaticSavepoint(queries[0], flags);
-      estimatedReceiveBufferBytes = 0;
+      flags = updateQueryMode(flags);
 
-      for (int i = 0; i < queries.length; ++i) {
-        Query query = queries[i];
-        V3ParameterList parameters = (V3ParameterList) parameterLists[i];
-        if (parameters == null) {
-          parameters = SimpleQuery.NO_PARAMETERS;
-        }
-
-        sendQuery(query, parameters, maxRows, fetchSize, flags, handler, batchHandler, adaptiveFetch);
-
-        if (handler.getException() != null) {
-          break;
+      boolean describeOnly = (QUERY_DESCRIBE_ONLY & flags) != 0;
+      // Check parameters and resolve OIDs.
+      if (!describeOnly) {
+        for (ParameterList parameterList : parameterLists) {
+          if (parameterList != null) {
+            ((V3ParameterList) parameterList).checkAllParametersSet();
+          }
         }
       }
 
-      if (handler.getException() == null) {
-        if ((flags & QueryExecutor.QUERY_EXECUTE_AS_SIMPLE) != 0) {
-          // Sync message is not required for 'Q' execution as 'Q' ends with ReadyForQuery message
-          // on its own
-        } else {
-          sendSync();
-        }
-        processResults(handler, flags, adaptiveFetch);
+      boolean autosave = false;
+      ResultHandler handler = batchHandler;
+      try {
+        handler = sendQueryPreamble(batchHandler, flags);
+        autosave = sendAutomaticSavepoint(queries[0], flags);
         estimatedReceiveBufferBytes = 0;
-      }
-    } catch (IOException e) {
-      abort();
-      handler.handleError(
-          new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
-              PSQLState.CONNECTION_FAILURE, e));
-    }
 
-    try {
-      handler.handleCompletion();
-      if (cleanupSavePoints) {
-        releaseSavePoint(autosave, flags);
+        for (int i = 0; i < queries.length; i++) {
+          Query query = queries[i];
+          V3ParameterList parameters = (V3ParameterList) parameterLists[i];
+          if (parameters == null) {
+            parameters = SimpleQuery.NO_PARAMETERS;
+          }
+
+          sendQuery(query, parameters, maxRows, fetchSize, flags, handler, batchHandler, adaptiveFetch);
+
+          if (handler.getException() != null) {
+            break;
+          }
+        }
+
+        if (handler.getException() == null) {
+          if ((flags & QueryExecutor.QUERY_EXECUTE_AS_SIMPLE) != 0) {
+            // Sync message is not required for 'Q' execution as 'Q' ends with ReadyForQuery message
+            // on its own
+          } else {
+            sendSync();
+          }
+          processResults(handler, flags, adaptiveFetch);
+          estimatedReceiveBufferBytes = 0;
+        }
+      } catch (IOException e) {
+        abort();
+        handler.handleError(
+            new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
+                PSQLState.CONNECTION_FAILURE, e));
       }
-    } catch (SQLException e) {
-      rollbackIfRequired(autosave, e);
+
+      try {
+        handler.handleCompletion();
+        if (cleanupSavePoints) {
+          releaseSavePoint(autosave, flags);
+        }
+      } catch (SQLException e) {
+        rollbackIfRequired(autosave, e);
+      }
     }
   }
 
@@ -596,7 +618,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     beginFlags = updateQueryMode(beginFlags);
 
-    final SimpleQuery beginQuery = ((flags & QueryExecutor.QUERY_READ_ONLY_HINT) == 0) ? beginTransactionQuery : beginReadOnlyTransactionQuery;
+    final SimpleQuery beginQuery = (flags & QueryExecutor.QUERY_READ_ONLY_HINT) == 0 ? beginTransactionQuery : beginReadOnlyTransactionQuery;
 
     sendOneQuery(beginQuery, SimpleQuery.NO_PARAMETERS, 0, 0, beginFlags);
 
@@ -604,6 +626,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     return new ResultHandlerDelegate(delegateHandler) {
       private boolean sawBegin = false;
 
+      @Override
       public void handleResultRows(Query fromQuery, Field[] fields, List<Tuple> tuples,
           /* @Nullable */ ResultCursor cursor) {
         if (sawBegin) {
@@ -615,7 +638,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
       public void handleCommandStatus(String status, long updateCount, long insertOID) {
         if (!sawBegin) {
           sawBegin = true;
-          if (!status.equals("BEGIN")) {
+          if (!"BEGIN".equals(status)) {
             handleError(new PSQLException(GT.tr("Expected command status BEGIN, got {0}.", status),
                 PSQLState.PROTOCOL_VIOLATION));
           }
@@ -630,20 +653,24 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   // Fastpath
   //
 
-  public synchronized byte /* @Nullable */ [] fastpathCall(int fnid, ParameterList parameters,
+  @Override
+  @SuppressWarnings("deprecation")
+  public byte /* @Nullable */ [] fastpathCall(int fnid, ParameterList parameters,
       boolean suppressBegin)
       throws SQLException {
-    waitOnLock();
-    if (!suppressBegin) {
-      doSubprotocolBegin();
-    }
-    try {
-      sendFastpathCall(fnid, (SimpleParameterList) parameters);
-      return receiveFastpathResult();
-    } catch (IOException ioe) {
-      abort();
-      throw new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
-          PSQLState.CONNECTION_FAILURE, ioe);
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      if (!suppressBegin) {
+        doSubprotocolBegin();
+      }
+      try {
+        sendFastpathCall(fnid, (SimpleParameterList) parameters);
+        return receiveFastpathResult();
+      } catch (IOException ioe) {
+        abort();
+        throw new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -658,7 +685,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
         @Override
         public void handleCommandStatus(String status, long updateCount, long insertOID) {
           if (!sawBegin) {
-            if (!status.equals("BEGIN")) {
+            if (!"BEGIN".equals(status)) {
               handleError(
                   new PSQLException(GT.tr("Expected command status BEGIN, got {0}.", status),
                       PSQLState.PROTOCOL_VIOLATION));
@@ -698,6 +725,8 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
   }
 
+  @Override
+  @SuppressWarnings("deprecation")
   public ParameterList createFastpathParameters(int count) {
     return new SimpleParameterList(count, this);
   }
@@ -717,7 +746,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     int paramCount = params.getParameterCount();
     int encodedSize = 0;
-    for (int i = 1; i <= paramCount; ++i) {
+    for (int i = 1; i <= paramCount; i++) {
       if (params.isNull(i)) {
         encodedSize += 4;
       } else {
@@ -729,7 +758,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     pgStream.sendInteger4(4 + 4 + 2 + 2 * paramCount + 2 + encodedSize + 2);
     pgStream.sendInteger4(fnid);
     pgStream.sendInteger2(paramCount);
-    for (int i = 1; i <= paramCount; ++i) {
+    for (int i = 1; i <= paramCount; i++) {
       pgStream.sendInteger2(params.isBinary(i) ? 1 : 0);
     }
     pgStream.sendInteger2(paramCount);
@@ -746,7 +775,8 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   }
 
   // Just for API compatibility with previous versions.
-  public synchronized void processNotifies() throws SQLException {
+  @Override
+  public void processNotifies() throws SQLException {
     processNotifies(-1);
   }
 
@@ -755,73 +785,76 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    *                      when =0, block forever
    *                      when &lt; 0, don't block
    */
-  public synchronized void processNotifies(int timeoutMillis) throws SQLException {
-    waitOnLock();
-    // Asynchronous notifies only arrive when we are not in a transaction
-    if (getTransactionState() != TransactionState.IDLE) {
-      return;
-    }
-
-    if (hasNotifications()) {
-      // No need to timeout when there are already notifications. We just check for more in this case.
-      timeoutMillis = -1;
-    }
-
-    boolean useTimeout = timeoutMillis > 0;
-    long startTime = 0;
-    int oldTimeout = 0;
-    if (useTimeout) {
-      startTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-      try {
-        oldTimeout = pgStream.getSocket().getSoTimeout();
-      } catch (SocketException e) {
-        throw new PSQLException(GT.tr("An error occurred while trying to get the socket "
-          + "timeout."), PSQLState.CONNECTION_FAILURE, e);
+  @Override
+  public void processNotifies(int timeoutMillis) throws SQLException {
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      // Asynchronous notifies only arrive when we are not in a transaction
+      if (getTransactionState() != TransactionState.IDLE) {
+        return;
       }
-    }
 
-    try {
-      while (timeoutMillis >= 0 || pgStream.hasMessagePending()) {
-        if (useTimeout && timeoutMillis >= 0) {
-          setSocketTimeout(timeoutMillis);
-        }
-        int c = pgStream.receiveChar();
-        if (useTimeout && timeoutMillis >= 0) {
-          setSocketTimeout(0); // Don't timeout after first char
-        }
-        switch (c) {
-          case 'A': // Asynchronous Notify
-            receiveAsyncNotify();
-            timeoutMillis = -1;
-            continue;
-          case 'E':
-            // Error Response (response to pretty much everything; backend then skips until Sync)
-            throw receiveErrorResponse();
-          case 'N': // Notice Response (warnings / info)
-            SQLWarning warning = receiveNoticeResponse();
-            addWarning(warning);
-            if (useTimeout) {
-              long newTimeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-              timeoutMillis += startTime - newTimeMillis; // Overflows after 49 days, ignore that
-              startTime = newTimeMillis;
-              if (timeoutMillis == 0) {
-                timeoutMillis = -1; // Don't accidentially wait forever
-              }
-            }
-            break;
-          default:
-            throw new PSQLException(GT.tr("Unknown Response Type {0}.", (char) c),
-                PSQLState.CONNECTION_FAILURE);
-        }
+      if (hasNotifications()) {
+        // No need to timeout when there are already notifications. We just check for more in this case.
+        timeoutMillis = -1;
       }
-    } catch (SocketTimeoutException ioe) {
-      // No notifications this time...
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
-          PSQLState.CONNECTION_FAILURE, ioe);
-    } finally {
+
+      boolean useTimeout = timeoutMillis > 0;
+      long startTime = 0;
+      int oldTimeout = 0;
       if (useTimeout) {
-        setSocketTimeout(oldTimeout);
+        startTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+        try {
+          oldTimeout = pgStream.getSocket().getSoTimeout();
+        } catch (SocketException e) {
+          throw new PSQLException(GT.tr("An error occurred while trying to get the socket "
+              + "timeout."), PSQLState.CONNECTION_FAILURE, e);
+        }
+      }
+
+      try {
+        while (timeoutMillis >= 0 || pgStream.hasMessagePending()) {
+          if (useTimeout && timeoutMillis >= 0) {
+            setSocketTimeout(timeoutMillis);
+          }
+          int c = pgStream.receiveChar();
+          if (useTimeout && timeoutMillis >= 0) {
+            setSocketTimeout(0); // Don't timeout after first char
+          }
+          switch (c) {
+            case 'A': // Asynchronous Notify
+              receiveAsyncNotify();
+              timeoutMillis = -1;
+              continue;
+            case 'E':
+              // Error Response (response to pretty much everything; backend then skips until Sync)
+              throw receiveErrorResponse();
+            case 'N': // Notice Response (warnings / info)
+              SQLWarning warning = receiveNoticeResponse();
+              addWarning(warning);
+              if (useTimeout) {
+                long newTimeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+                timeoutMillis += startTime - newTimeMillis; // Overflows after 49 days, ignore that
+                startTime = newTimeMillis;
+                if (timeoutMillis == 0) {
+                  timeoutMillis = -1; // Don't accidentally wait forever
+                }
+              }
+              break;
+            default:
+              throw new PSQLException(GT.tr("Unknown Response Type {0}.", (char) c),
+                  PSQLState.CONNECTION_FAILURE);
+          }
+        }
+      } catch (SocketTimeoutException ioe) {
+        // No notifications this time...
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      } finally {
+        if (useTimeout) {
+          setSocketTimeout(oldTimeout);
+        }
       }
     }
   }
@@ -924,28 +957,31 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @return CopyIn or CopyOut operation object
    * @throws SQLException on failure
    */
-  public synchronized CopyOperation startCopy(String sql, boolean suppressBegin)
+  @Override
+  public CopyOperation startCopy(String sql, boolean suppressBegin)
       throws SQLException {
-    waitOnLock();
-    if (!suppressBegin) {
-      doSubprotocolBegin();
-    }
-    byte[] buf = sql.getBytes(StandardCharsets.UTF_8);
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      if (!suppressBegin) {
+        doSubprotocolBegin();
+      }
+      byte[] buf = sql.getBytes(StandardCharsets.UTF_8);
 
-    try {
-      LOGGER.log(Level.FINEST, " FE=> Query(CopyStart)");
+      try {
+        LOGGER.log(Level.FINEST, " FE=> Query(CopyStart)");
 
-      pgStream.sendChar('Q');
-      pgStream.sendInteger4(buf.length + 4 + 1);
-      pgStream.send(buf);
-      pgStream.sendChar(0);
-      pgStream.flush();
+        pgStream.sendChar('Q');
+        pgStream.sendInteger4(buf.length + 4 + 1);
+        pgStream.send(buf);
+        pgStream.sendChar(0);
+        pgStream.flush();
 
-      return castNonNull(processCopyResults(null, true));
-      // expect a CopyInResponse or CopyOutResponse to our query above
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when starting copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+        return castNonNull(processCopyResults(null, true));
+        // expect a CopyInResponse or CopyOutResponse to our query above
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when starting copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -957,18 +993,20 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @throws SQLException on locking failure
    * @throws IOException on database connection failure
    */
-  private synchronized void initCopy(CopyOperationImpl op) throws SQLException, IOException {
-    pgStream.receiveInteger4(); // length not used
-    int rowFormat = pgStream.receiveChar();
-    int numFields = pgStream.receiveInteger2();
-    int[] fieldFormats = new int[numFields];
+  private void initCopy(CopyOperationImpl op) throws SQLException, IOException {
+    try (ResourceLock ignore = lock.obtain()) {
+      pgStream.receiveInteger4(); // length not used
+      int rowFormat = pgStream.receiveChar();
+      int numFields = pgStream.receiveInteger2();
+      int[] fieldFormats = new int[numFields];
 
-    for (int i = 0; i < numFields; i++) {
-      fieldFormats[i] = pgStream.receiveInteger2();
+      for (int i = 0; i < numFields; i++) {
+        fieldFormats[i] = pgStream.receiveInteger2();
+      }
+
+      lock(op);
+      op.init(this, rowFormat, fieldFormats);
     }
-
-    lock(op);
-    op.init(this, rowFormat, fieldFormats);
   }
 
   /**
@@ -988,7 +1026,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     try {
       if (op instanceof CopyIn) {
-        synchronized (this) {
+        try (ResourceLock ignore = lock.obtain()) {
           LOGGER.log(Level.FINEST, "FE => CopyFail");
           final byte[] msg = "Copy cancel requested".getBytes(StandardCharsets.US_ASCII);
           pgStream.sendChar('f'); // CopyFail
@@ -1025,7 +1063,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
       // future operations, rather than failing due to the
       // broken connection, will simply hang waiting for this
       // lock.
-      synchronized (this) {
+      try (ResourceLock ignore = lock.obtain()) {
         if (hasLock(op)) {
           unlock(op);
         }
@@ -1051,25 +1089,27 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @return number of rows updated for server versions 8.2 or newer
    * @throws SQLException on failure
    */
-  public synchronized long endCopy(CopyOperationImpl op) throws SQLException {
-    if (!hasLock(op)) {
-      throw new PSQLException(GT.tr("Tried to end inactive copy"), PSQLState.OBJECT_NOT_IN_STATE);
-    }
+  public long endCopy(CopyOperationImpl op) throws SQLException {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (!hasLock(op)) {
+        throw new PSQLException(GT.tr("Tried to end inactive copy"), PSQLState.OBJECT_NOT_IN_STATE);
+      }
 
-    try {
-      LOGGER.log(Level.FINEST, " FE=> CopyDone");
+      try {
+        LOGGER.log(Level.FINEST, " FE=> CopyDone");
 
-      pgStream.sendChar('c'); // CopyDone
-      pgStream.sendInteger4(4);
-      pgStream.flush();
+        pgStream.sendChar('c'); // CopyDone
+        pgStream.sendInteger4(4);
+        pgStream.flush();
 
-      do {
-        processCopyResults(op, true);
-      } while (hasLock(op));
-      return op.getHandledRowCount();
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when ending copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+        do {
+          processCopyResults(op, true);
+        } while (hasLock(op));
+        return op.getHandledRowCount();
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when ending copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -1083,22 +1123,24 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @param siz number of bytes to send (usually data.length)
    * @throws SQLException on failure
    */
-  public synchronized void writeToCopy(CopyOperationImpl op, byte[] data, int off, int siz)
+  public void writeToCopy(CopyOperationImpl op, byte[] data, int off, int siz)
       throws SQLException {
-    if (!hasLock(op)) {
-      throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
-          PSQLState.OBJECT_NOT_IN_STATE);
-    }
+    try (ResourceLock ignore = lock.obtain()) {
+      if (!hasLock(op)) {
+        throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
+            PSQLState.OBJECT_NOT_IN_STATE);
+      }
 
-    LOGGER.log(Level.FINEST, " FE=> CopyData({0})", siz);
+      LOGGER.log(Level.FINEST, " FE=> CopyData({0})", siz);
 
-    try {
-      pgStream.sendChar('d');
-      pgStream.sendInteger4(siz + 4);
-      pgStream.send(data, off, siz);
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+      try {
+        pgStream.sendChar('d');
+        pgStream.sendInteger4(siz + 4);
+        pgStream.send(data, off, siz);
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -1110,37 +1152,41 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @param from the source of bytes, e.g. a ByteBufferByteStreamWriter
    * @throws SQLException on failure
    */
-  public synchronized void writeToCopy(CopyOperationImpl op, ByteStreamWriter from)
+  public void writeToCopy(CopyOperationImpl op, ByteStreamWriter from)
       throws SQLException {
-    if (!hasLock(op)) {
-      throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
-          PSQLState.OBJECT_NOT_IN_STATE);
-    }
+    try (ResourceLock ignore = lock.obtain()) {
+      if (!hasLock(op)) {
+        throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
+            PSQLState.OBJECT_NOT_IN_STATE);
+      }
 
-    int siz = from.getLength();
-    LOGGER.log(Level.FINEST, " FE=> CopyData({0})", siz);
+      int siz = from.getLength();
+      LOGGER.log(Level.FINEST, " FE=> CopyData({0})", siz);
 
-    try {
-      pgStream.sendChar('d');
-      pgStream.sendInteger4(siz + 4);
-      pgStream.send(from);
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+      try {
+        pgStream.sendChar('d');
+        pgStream.sendInteger4(siz + 4);
+        pgStream.send(from);
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
-  public synchronized void flushCopy(CopyOperationImpl op) throws SQLException {
-    if (!hasLock(op)) {
-      throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
-          PSQLState.OBJECT_NOT_IN_STATE);
-    }
+  public void flushCopy(CopyOperationImpl op) throws SQLException {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (!hasLock(op)) {
+        throw new PSQLException(GT.tr("Tried to write to an inactive copy operation"),
+            PSQLState.OBJECT_NOT_IN_STATE);
+      }
 
-    try {
-      pgStream.flush();
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+      try {
+        pgStream.flush();
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when writing to copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -1152,17 +1198,19 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    * @param block whether to block waiting for input
    * @throws SQLException on any failure
    */
-  synchronized void readFromCopy(CopyOperationImpl op, boolean block) throws SQLException {
-    if (!hasLock(op)) {
-      throw new PSQLException(GT.tr("Tried to read from inactive copy"),
-          PSQLState.OBJECT_NOT_IN_STATE);
-    }
+  void readFromCopy(CopyOperationImpl op, boolean block) throws SQLException {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (!hasLock(op)) {
+        throw new PSQLException(GT.tr("Tried to read from inactive copy"),
+            PSQLState.OBJECT_NOT_IN_STATE);
+      }
 
-    try {
-      processCopyResults(op, block); // expect a call to handleCopydata() to store the data
-    } catch (IOException ioe) {
-      throw new PSQLException(GT.tr("Database connection failed when reading from copy"),
-          PSQLState.CONNECTION_FAILURE, ioe);
+      try {
+        processCopyResults(op, block); // expect a call to handleCopydata() to store the data
+      } catch (IOException ioe) {
+        throw new PSQLException(GT.tr("Database connection failed when reading from copy"),
+            PSQLState.CONNECTION_FAILURE, ioe);
+      }
     }
   }
 
@@ -1487,7 +1535,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
             flags);
       }
     } else {
-      for (int i = 0; i < subqueries.length; ++i) {
+      for (int i = 0; i < subqueries.length; i++) {
         final Query subquery = subqueries[i];
         flushIfDeadlockRisk(subquery, disallowBatching, resultHandler, batchHandler, flags);
 
@@ -1567,7 +1615,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
       StringBuilder sbuf = new StringBuilder(" FE=> Parse(stmt=" + statementName + ",query=\"");
       sbuf.append(nativeSql);
       sbuf.append("\",oids={");
-      for (int i = 1; i <= params.getParameterCount(); ++i) {
+      for (int i = 1; i <= params.getParameterCount(); i++) {
         if (i != 1) {
           sbuf.append(",");
         }
@@ -1601,7 +1649,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     pgStream.send(queryUtf8); // Query string
     pgStream.sendChar(0); // End of query string.
     pgStream.sendInteger2(params.getParameterCount()); // # of parameter types specified
-    for (int i = 1; i <= params.getParameterCount(); ++i) {
+    for (int i = 1; i <= params.getParameterCount(); i++) {
       pgStream.sendInteger4(params.getTypeOID(i));
     }
 
@@ -1616,13 +1664,13 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     String statementName = query.getStatementName();
     byte[] encodedStatementName = query.getEncodedStatementName();
-    byte[] encodedPortalName = (portal == null ? null : portal.getEncodedPortalName());
+    byte[] encodedPortalName = portal == null ? null : portal.getEncodedPortalName();
 
     if (LOGGER.isLoggable(Level.FINEST)) {
       StringBuilder sbuf = new StringBuilder(" FE=> Bind(stmt=" + statementName + ",portal=" + portal);
-      for (int i = 1; i <= params.getParameterCount(); ++i) {
+      for (int i = 1; i <= params.getParameterCount(); i++) {
         sbuf.append(",$").append(i).append("=<")
-            .append(params.toString(i,true))
+            .append(params.toString(i, true))
             .append(">,type=").append(Oid.toString(params.getTypeOID(i)));
       }
       sbuf.append(")");
@@ -1635,7 +1683,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     // + 2 (param value count) + N (encoded param value size)
     // + 2 (result format code count, 0)
     long encodedSize = 0;
-    for (int i = 1; i <= params.getParameterCount(); ++i) {
+    for (int i = 1; i <= params.getParameterCount(); i++) {
       if (params.isNull(i)) {
         encodedSize += 4;
       } else {
@@ -1681,7 +1729,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     // be received from a client. If we have a bigger value
     // from either very large parameters or incorrect length
     // descriptions of setXXXStream we do not send the bind
-    // messsage.
+    // message.
     //
     if (encodedSize > 0x3fffffff) {
       throw new PGBindException(new IOException(GT.tr(
@@ -1701,7 +1749,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     pgStream.sendChar(0); // End of statement name.
 
     pgStream.sendInteger2(params.getParameterCount()); // # of parameter format codes
-    for (int i = 1; i <= params.getParameterCount(); ++i) {
+    for (int i = 1; i <= params.getParameterCount(); i++) {
       pgStream.sendInteger2(params.isBinary(i) ? 1 : 0); // Parameter format code
     }
 
@@ -1716,7 +1764,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     //
     PGBindException bindException = null;
 
-    for (int i = 1; i <= params.getParameterCount(); ++i) {
+    for (int i = 1; i <= params.getParameterCount(); i++) {
       if (params.isNull(i)) {
         pgStream.sendInteger4(-1); // Magic size of -1 means NULL
       } else {
@@ -1730,7 +1778,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     }
 
     pgStream.sendInteger2(numBinaryFields); // # of result format codes
-    for (int i = 0; fields != null && i < numBinaryFields; ++i) {
+    for (int i = 0; fields != null && i < numBinaryFields; i++) {
       pgStream.sendInteger2(fields[i].getFormat());
     }
 
@@ -1760,7 +1808,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     LOGGER.log(Level.FINEST, " FE=> Describe(portal={0})", portal);
 
-    byte[] encodedPortalName = (portal == null ? null : portal.getEncodedPortalName());
+    byte[] encodedPortalName = portal == null ? null : portal.getEncodedPortalName();
 
     // Total size = 4 (size field) + 1 (describe type, 'P') + N + 1 (portal name)
     int encodedSize = 4 + 1 + (encodedPortalName == null ? 0 : encodedPortalName.length) + 1;
@@ -1814,8 +1862,8 @@ public class QueryExecutorImpl extends QueryExecutorBase {
       LOGGER.log(Level.FINEST, " FE=> Execute(portal={0},limit={1})", new Object[]{portal, limit});
     }
 
-    byte[] encodedPortalName = (portal == null ? null : portal.getEncodedPortalName());
-    int encodedSize = (encodedPortalName == null ? 0 : encodedPortalName.length);
+    byte[] encodedPortalName = portal == null ? null : portal.getEncodedPortalName();
+    int encodedSize = encodedPortalName == null ? 0 : encodedPortalName.length;
 
     // Total size = 4 (size field) + 1 + N (source portal) + 4 (max rows)
     pgStream.sendChar('E'); // Execute
@@ -1836,8 +1884,8 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     LOGGER.log(Level.FINEST, " FE=> ClosePortal({0})", portalName);
 
-    byte[] encodedPortalName = (portalName == null ? null : portalName.getBytes(StandardCharsets.UTF_8));
-    int encodedSize = (encodedPortalName == null ? 0 : encodedPortalName.length);
+    byte[] encodedPortalName = portalName == null ? null : portalName.getBytes(StandardCharsets.UTF_8);
+    int encodedSize = encodedPortalName == null ? 0 : encodedPortalName.length;
 
     // Total size = 4 (size field) + 1 (close type, 'P') + 1 + N (portal name)
     pgStream.sendChar('C'); // Close
@@ -2033,9 +2081,9 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   //
 
   private final HashMap<PhantomReference<SimpleQuery>, String> parsedQueryMap =
-      new HashMap<PhantomReference<SimpleQuery>, String>();
+      new HashMap<>();
   private final ReferenceQueue<SimpleQuery> parsedQueryCleanupQueue =
-      new ReferenceQueue<SimpleQuery>();
+      new ReferenceQueue<>();
 
   private void registerParsedQuery(SimpleQuery query, String statementName) {
     if (statementName == null) {
@@ -2043,7 +2091,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     }
 
     PhantomReference<SimpleQuery> cleanupRef =
-        new PhantomReference<SimpleQuery>(query, parsedQueryCleanupQueue);
+        new PhantomReference<>(query, parsedQueryCleanupQueue);
     parsedQueryMap.put(cleanupRef, statementName);
     query.setCleanupRef(cleanupRef);
   }
@@ -2067,8 +2115,8 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   //
 
   private final HashMap<PhantomReference<Portal>, String> openPortalMap =
-      new HashMap<PhantomReference<Portal>, String>();
-  private final ReferenceQueue<Portal> openPortalCleanupQueue = new ReferenceQueue<Portal>();
+      new HashMap<>();
+  private final ReferenceQueue<Portal> openPortalCleanupQueue = new ReferenceQueue<>();
 
   private static final Portal UNNAMED_PORTAL = new Portal(null, "unnamed");
 
@@ -2079,7 +2127,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
     String portalName = portal.getPortalName();
     PhantomReference<Portal> cleanupRef =
-        new PhantomReference<Portal>(portal, openPortalCleanupQueue);
+        new PhantomReference<>(portal, openPortalCleanupQueue);
     openPortalMap.put(cleanupRef, portalName);
     portal.setCleanupRef(cleanupRef);
   }
@@ -2196,7 +2244,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
             Field[] fields = currentQuery.getFields();
 
             if (fields != null) { // There was a resultset.
-              tuples = new ArrayList<Tuple>();
+              tuples = new ArrayList<>();
               handler.handleResultRows(currentQuery, fields, tuples, null);
               tuples = null;
             }
@@ -2225,7 +2273,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
           if (fields != null && tuples == null) {
             // When no results expected, pretend an empty resultset was returned
             // Not sure if new ArrayList can be always replaced with emptyList
-            tuples = noResults ? Collections.<Tuple>emptyList() : new ArrayList<Tuple>();
+            tuples = noResults ? Collections.emptyList() : new ArrayList<Tuple>();
           }
 
           if (fields != null && tuples != null) {
@@ -2289,7 +2337,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
           if (fields != null && tuples == null) {
             // When no results expected, pretend an empty resultset was returned
             // Not sure if new ArrayList can be always replaced with emptyList
-            tuples = noResults ? Collections.<Tuple>emptyList() : new ArrayList<Tuple>();
+            tuples = noResults ? Collections.emptyList() : new ArrayList<Tuple>();
           }
 
           // If we received tuples we must know the structure of the
@@ -2340,7 +2388,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
           }
           if (!noResults) {
             if (tuples == null) {
-              tuples = new ArrayList<Tuple>();
+              tuples = new ArrayList<>();
             }
             if (tuple != null) {
               tuples.add(tuple);
@@ -2406,7 +2454,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
 
         case 'T': // Row Description (response to Describe)
           Field[] fields = receiveFields();
-          tuples = new ArrayList<Tuple>();
+          tuples = new ArrayList<>();
 
           SimpleQuery query = castNonNull(pendingDescribePortalQueue.peekFirst());
           if (!pendingExecuteQueue.isEmpty()
@@ -2532,41 +2580,44 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     pgStream.skip(len - 4);
   }
 
-  public synchronized void fetch(ResultCursor cursor, ResultHandler handler, int fetchSize,
+  @Override
+  public void fetch(ResultCursor cursor, ResultHandler handler, int fetchSize,
       boolean adaptiveFetch) throws SQLException {
-    waitOnLock();
-    final Portal portal = (Portal) cursor;
+    try (ResourceLock ignore = lock.obtain()) {
+      waitOnLock();
+      final Portal portal = (Portal) cursor;
 
-    // Insert a ResultHandler that turns bare command statuses into empty datasets
-    // (if the fetch returns no rows, we see just a CommandStatus..)
-    final ResultHandler delegateHandler = handler;
-    final SimpleQuery query = castNonNull(portal.getQuery());
-    handler = new ResultHandlerDelegate(delegateHandler) {
-      @Override
-      public void handleCommandStatus(String status, long updateCount, long insertOID) {
-        handleResultRows(query, NO_FIELDS, new ArrayList<Tuple>(), null);
+      // Insert a ResultHandler that turns bare command statuses into empty datasets
+      // (if the fetch returns no rows, we see just a CommandStatus..)
+      final ResultHandler delegateHandler = handler;
+      final SimpleQuery query = castNonNull(portal.getQuery());
+      handler = new ResultHandlerDelegate(delegateHandler) {
+        @Override
+        public void handleCommandStatus(String status, long updateCount, long insertOID) {
+          handleResultRows(query, NO_FIELDS, new ArrayList<>(), null);
+        }
+      };
+
+      // Now actually run it.
+
+      try {
+        processDeadParsedQueries();
+        processDeadPortals();
+
+        sendExecute(query, portal, fetchSize);
+        sendSync();
+
+        processResults(handler, 0, adaptiveFetch);
+        estimatedReceiveBufferBytes = 0;
+      } catch (IOException e) {
+        abort();
+        handler.handleError(
+            new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
+                PSQLState.CONNECTION_FAILURE, e));
       }
-    };
 
-    // Now actually run it.
-
-    try {
-      processDeadParsedQueries();
-      processDeadPortals();
-
-      sendExecute(query, portal, fetchSize);
-      sendSync();
-
-      processResults(handler, 0, adaptiveFetch);
-      estimatedReceiveBufferBytes = 0;
-    } catch (IOException e) {
-      abort();
-      handler.handleError(
-          new PSQLException(GT.tr("An I/O error occurred while sending to the backend."),
-              PSQLState.CONNECTION_FAILURE, e));
+      handler.handleCompletion();
     }
-
-    handler.handleCompletion();
   }
 
   @Override
@@ -2592,7 +2643,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   }
 
   @Override
-  public void addQueryToAdaptiveFetchCache(boolean adaptiveFetch, /* @NonNull */ ResultCursor cursor) {
+  public void addQueryToAdaptiveFetchCache(boolean adaptiveFetch, ResultCursor cursor) {
     if (cursor instanceof Portal) {
       Query query = ((Portal) cursor).getQuery();
       if (Objects.nonNull(query)) {
@@ -2602,7 +2653,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   }
 
   @Override
-  public void removeQueryFromAdaptiveFetchCache(boolean adaptiveFetch, /* @NonNull */ ResultCursor cursor) {
+  public void removeQueryFromAdaptiveFetchCache(boolean adaptiveFetch, ResultCursor cursor) {
     if (cursor instanceof Portal) {
       Query query = ((Portal) cursor).getQuery();
       if (Objects.nonNull(query)) {
@@ -2648,7 +2699,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     int pid = pgStream.receiveInteger4();
     String msg = pgStream.receiveCanonicalString();
     String param = pgStream.receiveString();
-    addNotification(new org.postgresql.core.Notification(msg, pid, param));
+    addNotification(new Notification(msg, pid, param));
 
     if (LOGGER.isLoggable(Level.FINEST)) {
       LOGGER.log(Level.FINEST, " <=BE AsyncNotify({0},{1},{2})", new Object[]{pid, msg, param});
@@ -2749,9 +2800,9 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   }
 
   @Override
+  @SuppressWarnings("deprecation")
   protected void sendCloseMessage() throws IOException {
-    pgStream.sendChar('X');
-    pgStream.sendInteger4(4);
+    closeAction.sendCloseMessage(pgStream);
   }
 
   public void readStartupMessages() throws IOException, SQLException {
@@ -2826,15 +2877,15 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     // Update client-visible parameter status map for getParameterStatuses()
     onParameterStatus(name, value);
 
-    if (name.equals("client_encoding")) {
+    if ("client_encoding".equals(name)) {
       if (allowEncodingChanges) {
-        if (!value.equalsIgnoreCase("UTF8") && !value.equalsIgnoreCase("UTF-8")) {
+        if (!"UTF8".equalsIgnoreCase(value) && !"UTF-8".equalsIgnoreCase(value)) {
           LOGGER.log(Level.FINE,
               "pgjdbc expects client_encoding to be UTF8 for proper operation. Actual encoding is {0}",
               value);
         }
         pgStream.setEncoding(Encoding.getDatabaseEncoding(value));
-      } else if (!value.equalsIgnoreCase("UTF8") && !value.equalsIgnoreCase("UTF-8")) {
+      } else if (!"UTF8".equalsIgnoreCase(value) && !"UTF-8".equalsIgnoreCase(value)) {
         close(); // we're screwed now; we can't trust any subsequent string.
         throw new PSQLException(GT.tr(
             "The server''s client_encoding parameter was changed to {0}. The JDBC driver requires client_encoding to be UTF8 for correct operation.",
@@ -2843,18 +2894,18 @@ public class QueryExecutorImpl extends QueryExecutorBase {
       }
     }
 
-    if (name.equals("DateStyle") && !value.startsWith("ISO")
-        && !value.toUpperCase().startsWith("ISO")) {
+    if ("DateStyle".equals(name) && !value.startsWith("ISO")
+        && !value.toUpperCase(Locale.ROOT).startsWith("ISO")) {
       close(); // we're screwed now; we can't trust any subsequent date.
       throw new PSQLException(GT.tr(
           "The server''s DateStyle parameter was changed to {0}. The JDBC driver requires DateStyle to begin with ISO for correct operation.",
           value), PSQLState.CONNECTION_FAILURE);
     }
 
-    if (name.equals("standard_conforming_strings")) {
-      if (value.equals("on")) {
+    if ("standard_conforming_strings".equals(name)) {
+      if ("on".equals(value)) {
         setStandardConformingStrings(true);
-      } else if (value.equals("off")) {
+      } else if ("off".equals(value)) {
         setStandardConformingStrings(false);
       } else {
         close();
@@ -2890,6 +2941,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     this.timeZone = timeZone;
   }
 
+  @Override
   public /* @Nullable */ TimeZone getTimeZone() {
     return timeZone;
   }
@@ -2898,6 +2950,7 @@ public class QueryExecutorImpl extends QueryExecutorBase {
     this.applicationName = applicationName;
   }
 
+  @Override
   public String getApplicationName() {
     if (applicationName == null) {
       return "";
@@ -2911,41 +2964,96 @@ public class QueryExecutorImpl extends QueryExecutorBase {
   }
 
   @Override
+  public void addBinaryReceiveOid(int oid) {
+    synchronized (useBinaryReceiveForOids) {
+      useBinaryReceiveForOids.add(oid);
+    }
+  }
+
+  @Override
+  public void removeBinaryReceiveOid(int oid) {
+    synchronized (useBinaryReceiveForOids) {
+      useBinaryReceiveForOids.remove(oid);
+    }
+  }
+
+  @Override
+  @SuppressWarnings("deprecation")
+  public Set<? extends Integer> getBinaryReceiveOids() {
+    // copy the values to prevent ConcurrentModificationException when reader accesses the elements
+    synchronized (useBinaryReceiveForOids) {
+      return new HashSet<>(useBinaryReceiveForOids);
+    }
+  }
+
+  @Override
   public boolean useBinaryForReceive(int oid) {
-    return useBinaryReceiveForOids.contains(oid);
+    synchronized (useBinaryReceiveForOids) {
+      return useBinaryReceiveForOids.contains(oid);
+    }
   }
 
   @Override
   public void setBinaryReceiveOids(Set<Integer> oids) {
-    useBinaryReceiveForOids.clear();
-    useBinaryReceiveForOids.addAll(oids);
+    synchronized (useBinaryReceiveForOids) {
+      useBinaryReceiveForOids.clear();
+      useBinaryReceiveForOids.addAll(oids);
+    }
+  }
+
+  @Override
+  public void addBinarySendOid(int oid) {
+    synchronized (useBinarySendForOids) {
+      useBinarySendForOids.add(oid);
+    }
+  }
+
+  @Override
+  public void removeBinarySendOid(int oid) {
+    synchronized (useBinarySendForOids) {
+      useBinarySendForOids.remove(oid);
+    }
+  }
+
+  @Override
+  @SuppressWarnings("deprecation")
+  public Set<? extends Integer> getBinarySendOids() {
+    // copy the values to prevent ConcurrentModificationException when reader accesses the elements
+    synchronized (useBinarySendForOids) {
+      return new HashSet<>(useBinarySendForOids);
+    }
   }
 
   @Override
   public boolean useBinaryForSend(int oid) {
-    return useBinarySendForOids.contains(oid);
+    synchronized (useBinarySendForOids) {
+      return useBinarySendForOids.contains(oid);
+    }
   }
 
   @Override
   public void setBinarySendOids(Set<Integer> oids) {
-    useBinarySendForOids.clear();
-    useBinarySendForOids.addAll(oids);
+    synchronized (useBinarySendForOids) {
+      useBinarySendForOids.clear();
+      useBinarySendForOids.addAll(oids);
+    }
   }
 
   private void setIntegerDateTimes(boolean state) {
     integerDateTimes = state;
   }
 
+  @Override
   public boolean getIntegerDateTimes() {
     return integerDateTimes;
   }
 
-  private final Deque<SimpleQuery> pendingParseQueue = new ArrayDeque<SimpleQuery>();
-  private final Deque<Portal> pendingBindQueue = new ArrayDeque<Portal>();
-  private final Deque<ExecuteRequest> pendingExecuteQueue = new ArrayDeque<ExecuteRequest>();
+  private final Deque<SimpleQuery> pendingParseQueue = new ArrayDeque<>();
+  private final Deque<Portal> pendingBindQueue = new ArrayDeque<>();
+  private final Deque<ExecuteRequest> pendingExecuteQueue = new ArrayDeque<>();
   private final Deque<DescribeRequest> pendingDescribeStatementQueue =
-      new ArrayDeque<DescribeRequest>();
-  private final Deque<SimpleQuery> pendingDescribePortalQueue = new ArrayDeque<SimpleQuery>();
+      new ArrayDeque<>();
+  private final Deque<SimpleQuery> pendingDescribePortalQueue = new ArrayDeque<>();
 
   private long nextUniqueID = 1;
   private final boolean allowEncodingChanges;
@@ -2959,32 +3067,32 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    *
    * <p>Used to avoid deadlocks, see MAX_BUFFERED_RECV_BYTES.</p>
    */
-  private int estimatedReceiveBufferBytes = 0;
+  private int estimatedReceiveBufferBytes;
 
   private final SimpleQuery beginTransactionQuery =
       new SimpleQuery(
-          new NativeQuery("BEGIN", new int[0], false, SqlCommand.BLANK),
+          new NativeQuery("BEGIN", null, false, SqlCommand.BLANK),
           null, false);
 
   private final SimpleQuery beginReadOnlyTransactionQuery =
       new SimpleQuery(
-          new NativeQuery("BEGIN READ ONLY", new int[0], false, SqlCommand.BLANK),
+          new NativeQuery("BEGIN READ ONLY", null, false, SqlCommand.BLANK),
           null, false);
 
   private final SimpleQuery emptyQuery =
       new SimpleQuery(
-          new NativeQuery("", new int[0], false,
+          new NativeQuery("", null, false,
               SqlCommand.createStatementTypeInfo(SqlCommandType.BLANK)
           ), null, false);
 
   private final SimpleQuery autoSaveQuery =
       new SimpleQuery(
-          new NativeQuery("SAVEPOINT PGJDBC_AUTOSAVE", new int[0], false, SqlCommand.BLANK),
+          new NativeQuery("SAVEPOINT PGJDBC_AUTOSAVE", null, false, SqlCommand.BLANK),
           null, false);
 
   private final SimpleQuery releaseAutoSave =
       new SimpleQuery(
-          new NativeQuery("RELEASE SAVEPOINT PGJDBC_AUTOSAVE", new int[0], false, SqlCommand.BLANK),
+          new NativeQuery("RELEASE SAVEPOINT PGJDBC_AUTOSAVE", null, false, SqlCommand.BLANK),
           null, false);
 
   /*
@@ -2992,6 +3100,6 @@ public class QueryExecutorImpl extends QueryExecutorBase {
    */
   private final SimpleQuery restoreToAutoSave =
       new SimpleQuery(
-          new NativeQuery("ROLLBACK TO SAVEPOINT PGJDBC_AUTOSAVE", new int[0], false, SqlCommand.BLANK),
+          new NativeQuery("ROLLBACK TO SAVEPOINT PGJDBC_AUTOSAVE", null, false, SqlCommand.BLANK),
           null, false);
 }

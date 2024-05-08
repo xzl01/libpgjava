@@ -8,11 +8,13 @@ package org.postgresql;
 import static org.postgresql.util.internal.Nullness.castNonNull;
 
 import org.postgresql.jdbc.PgConnection;
+import org.postgresql.jdbc.ResourceLock;
+import org.postgresql.jdbcurlresolver.PgPassParser;
+import org.postgresql.jdbcurlresolver.PgServiceConfParser;
 import org.postgresql.util.DriverInfo;
-import org.postgresql.util.ExpressionProperties;
 import org.postgresql.util.GT;
 import org.postgresql.util.HostSpec;
-import org.postgresql.util.LogWriterHandler;
+import org.postgresql.util.PGPropertyUtil;
 import org.postgresql.util.PSQLException;
 import org.postgresql.util.PSQLState;
 import org.postgresql.util.SharedTimer;
@@ -22,8 +24,9 @@ import org.postgresql.util.URLCoder;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
-import java.security.AccessController;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.sql.Connection;
@@ -36,12 +39,9 @@ import java.util.Enumeration;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.Formatter;
+import java.util.concurrent.locks.Condition;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.logging.SimpleFormatter;
-import java.util.logging.StreamHandler;
 
 /**
  * <p>The Java SQL framework allows for multiple database drivers. Each driver should supply a class
@@ -66,7 +66,6 @@ public class Driver implements java.sql.Driver {
   private static final Logger PARENT_LOGGER = Logger.getLogger("org.postgresql");
   private static final Logger LOGGER = Logger.getLogger("org.postgresql.Driver");
   private static final SharedTimer SHARED_TIMER = new SharedTimer();
-  private static final String DEFAULT_PORT = "5432";
 
   static {
     try {
@@ -84,24 +83,58 @@ public class Driver implements java.sql.Driver {
   // properties files.
   private /* @Nullable */ Properties defaultProperties;
 
-  private synchronized Properties getDefaultProperties() throws IOException {
-    if (defaultProperties != null) {
+  private final ResourceLock lock = new ResourceLock();
+
+  private Properties getDefaultProperties() throws IOException {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (defaultProperties != null) {
+        return defaultProperties;
+      }
+
+      // Make sure we load properties with the maximum possible privileges.
+      try {
+        defaultProperties =
+            doPrivileged(new PrivilegedExceptionAction<Properties>() {
+              @Override
+              public Properties run() throws IOException {
+                return loadDefaultProperties();
+              }
+            });
+      } catch (PrivilegedActionException e) {
+        Exception ex = e.getException();
+        if (ex instanceof IOException) {
+          throw (IOException) ex;
+        }
+        throw new RuntimeException(e);
+      } catch (Throwable e) {
+        if (e instanceof IOException) {
+          throw (IOException) e;
+        }
+        if (e instanceof RuntimeException) {
+          throw (RuntimeException) e;
+        }
+        if (e instanceof Error) {
+          throw (Error) e;
+        }
+        throw new RuntimeException(e);
+      }
+
       return defaultProperties;
     }
+  }
 
-    // Make sure we load properties with the maximum possible privileges.
+  private static <T> T doPrivileged(PrivilegedExceptionAction<T> action) throws Throwable {
     try {
-      defaultProperties =
-          AccessController.doPrivileged(new PrivilegedExceptionAction<Properties>() {
-            public Properties run() throws IOException {
-              return loadDefaultProperties();
-            }
-          });
-    } catch (PrivilegedActionException e) {
-      throw (IOException) e.getException();
+      Class<?> accessControllerClass = Class.forName("java.security.AccessController");
+      Method doPrivileged = accessControllerClass.getMethod("doPrivileged",
+          PrivilegedExceptionAction.class);
+      //noinspection unchecked
+      return (T) doPrivileged.invoke(null, action);
+    } catch (ClassNotFoundException e) {
+      return action.run();
+    } catch (InvocationTargetException e) {
+      throw castNonNull(e.getCause());
     }
-
-    return defaultProperties;
   }
 
   private Properties loadDefaultProperties() throws IOException {
@@ -141,7 +174,7 @@ public class Driver implements java.sql.Driver {
     // in later files in the classpath to override settings specified in
     // earlier files. To do this we've got to read the returned
     // Enumeration into temporary storage.
-    ArrayList<URL> urls = new ArrayList<URL>();
+    ArrayList<URL> urls = new ArrayList<>();
     Enumeration<URL> urlEnum = cl.getResources("org/postgresql/driverconfig.properties");
     while (urlEnum.hasMoreElements()) {
       urls.add(urlEnum.nextElement());
@@ -244,11 +277,11 @@ public class Driver implements java.sql.Driver {
     }
     // parse URL and add more properties
     if ((props = parseURL(url, props)) == null) {
-      return null;
+      throw new PSQLException(
+          GT.tr("Unable to parse URL {0}", url),
+          PSQLState.UNEXPECTED_ERROR);
     }
     try {
-      // Setup java.util.logging.Logger using connection properties.
-      setupLoggerFromProperties(props);
 
       LOGGER.log(Level.FINE, "Connecting with URL: {0}", url);
 
@@ -275,12 +308,14 @@ public class Driver implements java.sql.Driver {
       // re-throw the exception, otherwise it will be caught next, and a
       // org.postgresql.unusual error will be returned instead.
       throw ex1;
-    } catch (java.security.AccessControlException ace) {
-      throw new PSQLException(
-          GT.tr(
-              "Your security policy has prevented the connection from being attempted.  You probably need to grant the connect java.net.SocketPermission to the database server host and port that you wish to connect to."),
-          PSQLState.UNEXPECTED_ERROR, ace);
     } catch (Exception ex2) {
+      if ("java.security.AccessControlException".equals(ex2.getClass().getName())) {
+        // java.security.AccessControlException has been deprecated for removal, so compare the class name
+        throw new PSQLException(
+            GT.tr(
+                "Your security policy has prevented the connection from being attempted.  You probably need to grant the connect java.net.SocketPermission to the database server host and port that you wish to connect to."),
+            PSQLState.UNEXPECTED_ERROR, ex2);
+      }
       LOGGER.log(Level.FINE, "Unexpected connection error: ", ex2);
       throw new PSQLException(
           GT.tr(
@@ -289,73 +324,13 @@ public class Driver implements java.sql.Driver {
     }
   }
 
-  // Used to check if the handler file is the same
-  private static /* @Nullable */ String loggerHandlerFile;
-
   /**
-   * <p>Setup java.util.logging.Logger using connection properties.</p>
-   *
-   * <p>See {@link PGProperty#LOGGER_FILE} and {@link PGProperty#LOGGER_FILE}</p>
-   *
+   *  this is an empty method left here for graalvm
+   *  we removed the ability to setup the logger from properties
+   *  due to a security issue
    * @param props Connection Properties
    */
   private void setupLoggerFromProperties(final Properties props) {
-    final String driverLogLevel = PGProperty.LOGGER_LEVEL.get(props);
-    if (driverLogLevel == null) {
-      return; // Don't mess with Logger if not set
-    }
-    if ("OFF".equalsIgnoreCase(driverLogLevel)) {
-      PARENT_LOGGER.setLevel(Level.OFF);
-      return; // Don't mess with Logger if set to OFF
-    } else if ("DEBUG".equalsIgnoreCase(driverLogLevel)) {
-      PARENT_LOGGER.setLevel(Level.FINE);
-    } else if ("TRACE".equalsIgnoreCase(driverLogLevel)) {
-      PARENT_LOGGER.setLevel(Level.FINEST);
-    }
-
-    ExpressionProperties exprProps = new ExpressionProperties(props, System.getProperties());
-    final String driverLogFile = PGProperty.LOGGER_FILE.get(exprProps);
-    if (driverLogFile != null && driverLogFile.equals(loggerHandlerFile)) {
-      return; // Same file output, do nothing.
-    }
-
-    for (java.util.logging.Handler handlers : PARENT_LOGGER.getHandlers()) {
-      // Remove previously set Handlers
-      handlers.close();
-      PARENT_LOGGER.removeHandler(handlers);
-      loggerHandlerFile = null;
-    }
-
-    java.util.logging.Handler handler = null;
-    if (driverLogFile != null) {
-      try {
-        handler = new java.util.logging.FileHandler(driverLogFile);
-        loggerHandlerFile = driverLogFile;
-      } catch (Exception ex) {
-        System.err.println("Cannot enable FileHandler, fallback to ConsoleHandler.");
-      }
-    }
-
-    Formatter formatter = new SimpleFormatter();
-
-    if ( handler == null ) {
-      if (DriverManager.getLogWriter() != null) {
-        handler = new LogWriterHandler(DriverManager.getLogWriter());
-      } else if ( DriverManager.getLogStream() != null) {
-        handler = new StreamHandler(DriverManager.getLogStream(), formatter);
-      } else {
-        handler = new ConsoleHandler();
-      }
-    } else {
-      handler.setFormatter(formatter);
-    }
-
-    Level loggerLevel = PARENT_LOGGER.getLevel();
-    if (loggerLevel != null) {
-      handler.setLevel(loggerLevel);
-    }
-    PARENT_LOGGER.setUseParentHandlers(false);
-    PARENT_LOGGER.addHandler(handler);
   }
 
   /**
@@ -363,11 +338,15 @@ public class Driver implements java.sql.Driver {
    * while enforcing a login timeout.
    */
   private static class ConnectThread implements Runnable {
+    private final ResourceLock lock = new ResourceLock();
+    private final Condition lockCondition = lock.newCondition();
+
     ConnectThread(String url, Properties props) {
       this.url = url;
       this.props = props;
     }
 
+    @Override
     public void run() {
       Connection conn;
       Throwable error;
@@ -380,7 +359,7 @@ public class Driver implements java.sql.Driver {
         error = t;
       }
 
-      synchronized (this) {
+      try (ResourceLock ignore = lock.obtain()) {
         if (abandoned) {
           if (conn != null) {
             try {
@@ -391,7 +370,7 @@ public class Driver implements java.sql.Driver {
         } else {
           result = conn;
           resultException = error;
-          notify();
+          lockCondition.signal();
         }
       }
     }
@@ -406,12 +385,13 @@ public class Driver implements java.sql.Driver {
      */
     public Connection getResult(long timeout) throws SQLException {
       long expiry = TimeUnit.NANOSECONDS.toMillis(System.nanoTime()) + timeout;
-      synchronized (this) {
+      try (ResourceLock ignore = lock.obtain()) {
         while (true) {
           if (result != null) {
             return result;
           }
 
+          Throwable resultException = this.resultException;
           if (resultException != null) {
             if (resultException instanceof SQLException) {
               resultException.fillInStackTrace();
@@ -432,7 +412,7 @@ public class Driver implements java.sql.Driver {
           }
 
           try {
-            wait(delay);
+            lockCondition.await(delay, TimeUnit.MILLISECONDS);
           } catch (InterruptedException ie) {
 
             // reset the interrupt flag
@@ -463,7 +443,7 @@ public class Driver implements java.sql.Driver {
    * @throws SQLException if the connection could not be made
    */
   private static Connection makeConnection(String url, Properties props) throws SQLException {
-    return new PgConnection(hostSpecs(props), user(props), database(props), props, url);
+    return new PgConnection(hostSpecs(props), props, url);
   }
 
   /**
@@ -503,7 +483,7 @@ public class Driver implements java.sql.Driver {
 
     PGProperty[] knownProperties = PGProperty.values();
     DriverPropertyInfo[] props = new DriverPropertyInfo[knownProperties.length];
-    for (int i = 0; i < props.length; ++i) {
+    for (int i = 0; i < props.length; i++) {
       props[i] = knownProperties[i].toDriverPropertyInfo(copy);
     }
 
@@ -512,12 +492,12 @@ public class Driver implements java.sql.Driver {
 
   @Override
   public int getMajorVersion() {
-    return org.postgresql.util.DriverInfo.MAJOR_VERSION;
+    return DriverInfo.MAJOR_VERSION;
   }
 
   @Override
   public int getMinorVersion() {
-    return org.postgresql.util.DriverInfo.MINOR_VERSION;
+    return DriverInfo.MINOR_VERSION;
   }
 
   /**
@@ -551,7 +531,15 @@ public class Driver implements java.sql.Driver {
    * @return Properties with elements added from the url
    */
   public static /* @Nullable */ Properties parseURL(String url, /* @Nullable */ Properties defaults) {
-    Properties urlProps = new Properties(defaults);
+    // priority 1 - URL values
+    Properties priority1Url = new Properties();
+    // priority 2 - Properties given as argument to DriverManager.getConnection()
+    // argument "defaults" EXCLUDING defaults
+    // priority 3 - Values retrieved by "service"
+    Properties priority3Service = new Properties();
+    // priority 4 - Properties loaded by Driver.loadDefaultProperties() (user, org/postgresql/driverconfig.properties)
+    // argument "defaults" INCLUDING defaults
+    // priority 5 - PGProperty defaults for PGHOST, PGPORT, PGDBNAME
 
     String urlServer = url;
     String urlArgs = "";
@@ -568,36 +556,45 @@ public class Driver implements java.sql.Driver {
     }
     urlServer = urlServer.substring("jdbc:postgresql:".length());
 
-    if (urlServer.startsWith("//")) {
+    if ("//".equals(urlServer) || "///".equals(urlServer)) {
+      urlServer = "";
+    } else if (urlServer.startsWith("//")) {
       urlServer = urlServer.substring(2);
+      long slashCount = urlServer.chars().filter(ch -> ch == '/').count();
+      if (slashCount > 1) {
+        LOGGER.log(Level.WARNING, "JDBC URL contains too many / characters: {0}", url);
+        return null;
+      }
       int slash = urlServer.indexOf('/');
       if (slash == -1) {
         LOGGER.log(Level.WARNING, "JDBC URL must contain a / at the end of the host or port: {0}", url);
         return null;
       }
-      urlProps.setProperty("PGDBNAME", URLCoder.decode(urlServer.substring(slash + 1)));
+      if (!urlServer.endsWith("/")) {
+        String value = urlDecode(urlServer.substring(slash + 1));
+        if (value == null) {
+          return null;
+        }
+        PGProperty.PG_DBNAME.set(priority1Url, value);
+      }
+      urlServer = urlServer.substring(0, slash);
 
-      String[] addresses = urlServer.substring(0, slash).split(",");
+      String[] addresses = urlServer.split(",");
       StringBuilder hosts = new StringBuilder();
       StringBuilder ports = new StringBuilder();
       for (String address : addresses) {
         int portIdx = address.lastIndexOf(':');
         if (portIdx != -1 && address.lastIndexOf(']') < portIdx) {
           String portStr = address.substring(portIdx + 1);
-          try {
-            int port = Integer.parseInt(portStr);
-            if (port < 1 || port > 65535) {
-              LOGGER.log(Level.WARNING, "JDBC URL port: {0} not valid (1:65535) ", portStr);
-              return null;
-            }
-          } catch (NumberFormatException ignore) {
-            LOGGER.log(Level.WARNING, "JDBC URL invalid port number: {0}", portStr);
-            return null;
-          }
           ports.append(portStr);
-          hosts.append(address.subSequence(0, portIdx));
+          CharSequence hostStr = address.subSequence(0, portIdx);
+          if (hostStr.length() == 0) {
+            hosts.append(PGProperty.PG_HOST.getDefaultValue());
+          } else {
+            hosts.append(hostStr);
+          }
         } else {
-          ports.append(DEFAULT_PORT);
+          ports.append(PGProperty.PG_PORT.getDefaultValue());
           hosts.append(address);
         }
         ports.append(',');
@@ -605,74 +602,119 @@ public class Driver implements java.sql.Driver {
       }
       ports.setLength(ports.length() - 1);
       hosts.setLength(hosts.length() - 1);
-      urlProps.setProperty("PGPORT", ports.toString());
-      urlProps.setProperty("PGHOST", hosts.toString());
+      PGProperty.PG_HOST.set(priority1Url, hosts.toString());
+      PGProperty.PG_PORT.set(priority1Url, ports.toString());
+    } else if (urlServer.startsWith("/")) {
+      return null;
     } else {
-      /*
-       if there are no defaults set or any one of PORT, HOST, DBNAME not set
-       then set it to default
-      */
-      if (defaults == null || !defaults.containsKey("PGPORT")) {
-        urlProps.setProperty("PGPORT", DEFAULT_PORT);
+      String value = urlDecode(urlServer);
+      if (value == null) {
+        return null;
       }
-      if (defaults == null || !defaults.containsKey("PGHOST")) {
-        urlProps.setProperty("PGHOST", "localhost");
-      }
-      if (defaults == null || !defaults.containsKey("PGDBNAME")) {
-        urlProps.setProperty("PGDBNAME", URLCoder.decode(urlServer));
-      }
+      priority1Url.setProperty(PGProperty.PG_DBNAME.getName(), value);
     }
 
     // parse the args part of the url
     String[] args = urlArgs.split("&");
+    String serviceName = null;
     for (String token : args) {
       if (token.isEmpty()) {
         continue;
       }
       int pos = token.indexOf('=');
       if (pos == -1) {
-        urlProps.setProperty(token, "");
+        priority1Url.setProperty(token, "");
       } else {
-        urlProps.setProperty(token.substring(0, pos), URLCoder.decode(token.substring(pos + 1)));
+        String pName = PGPropertyUtil.translatePGServiceToPGProperty(token.substring(0, pos));
+        String pValue = urlDecode(token.substring(pos + 1));
+        if (pValue == null) {
+          return null;
+        }
+        if (PGProperty.SERVICE.getName().equals(pName)) {
+          serviceName = pValue;
+        } else {
+          priority1Url.setProperty(pName, pValue);
+        }
       }
     }
 
-    return urlProps;
+    // load pg_service.conf
+    if (serviceName != null) {
+      LOGGER.log(Level.FINE, "Processing option [?service={0}]", serviceName);
+      Properties result = PgServiceConfParser.getServiceProperties(serviceName);
+      if (result == null) {
+        LOGGER.log(Level.WARNING, "Definition of service [{0}] not found", serviceName);
+        return null;
+      }
+      priority3Service.putAll(result);
+    }
+
+    // combine result based on order of priority
+    Properties result = new Properties();
+    result.putAll(priority1Url);
+    if (defaults != null) {
+      // priority 2 - forEach() returns all entries EXCEPT defaults
+      defaults.forEach(result::putIfAbsent);
+    }
+    priority3Service.forEach(result::putIfAbsent);
+    if (defaults != null) {
+      // priority 4 - stringPropertyNames() returns all entries INCLUDING defaults
+      defaults.stringPropertyNames().forEach(s -> result.putIfAbsent(s, castNonNull(defaults.getProperty(s))));
+    }
+    // priority 5 - PGProperty defaults for PGHOST, PGPORT, PGDBNAME
+    result.putIfAbsent(PGProperty.PG_PORT.getName(), castNonNull(PGProperty.PG_PORT.getDefaultValue()));
+    result.putIfAbsent(PGProperty.PG_HOST.getName(), castNonNull(PGProperty.PG_HOST.getDefaultValue()));
+    if (PGProperty.USER.getOrDefault(result) != null) {
+      result.putIfAbsent(PGProperty.PG_DBNAME.getName(), castNonNull(PGProperty.USER.getOrDefault(result)));
+    }
+
+    // consistency check
+    if (!PGPropertyUtil.propertiesConsistencyCheck(result)) {
+      return null;
+    }
+
+    // try to load .pgpass if password is missing
+    if (PGProperty.PASSWORD.getOrDefault(result) == null) {
+      String password = PgPassParser.getPassword(
+          PGProperty.PG_HOST.getOrDefault(result), PGProperty.PG_PORT.getOrDefault(result), PGProperty.PG_DBNAME.getOrDefault(result), PGProperty.USER.getOrDefault(result)
+      );
+      if (password != null && !password.isEmpty()) {
+        PGProperty.PASSWORD.set(result, password);
+      }
+    }
+    //
+    return result;
+  }
+
+  // decode url, on failure log and return null
+  private static /* @Nullable */ String urlDecode(String url) {
+    try {
+      return URLCoder.decode(url);
+    } catch (IllegalArgumentException e) {
+      LOGGER.log(Level.FINE, "Url [{0}] parsing failed with error [{1}]", new Object[]{url, e.getMessage()});
+    }
+    return null;
   }
 
   /**
    * @return the address portion of the URL
    */
   private static HostSpec[] hostSpecs(Properties props) {
-    String[] hosts = castNonNull(props.getProperty("PGHOST")).split(",");
-    String[] ports = castNonNull(props.getProperty("PGPORT")).split(",");
-    String localSocketAddress = props.getProperty("localSocketAddress");
+    String[] hosts = castNonNull(PGProperty.PG_HOST.getOrDefault(props)).split(",");
+    String[] ports = castNonNull(PGProperty.PG_PORT.getOrDefault(props)).split(",");
+    String localSocketAddress = PGProperty.LOCAL_SOCKET_ADDRESS.getOrDefault(props);
     HostSpec[] hostSpecs = new HostSpec[hosts.length];
-    for (int i = 0; i < hostSpecs.length; ++i) {
+    for (int i = 0; i < hostSpecs.length; i++) {
       hostSpecs[i] = new HostSpec(hosts[i], Integer.parseInt(ports[i]), localSocketAddress);
     }
     return hostSpecs;
   }
 
   /**
-   * @return the username of the URL
-   */
-  private static String user(Properties props) {
-    return props.getProperty("user", "");
-  }
-
-  /**
-   * @return the database name of the URL
-   */
-  private static String database(Properties props) {
-    return props.getProperty("PGDBNAME", "");
-  }
-
-  /**
    * @return the timeout from the URL, in milliseconds
    */
   private static long timeout(Properties props) {
-    String timeout = PGProperty.LOGIN_TIMEOUT.get(props);
+    String timeout = PGProperty.LOGIN_TIMEOUT.getOrDefault(props);
     if (timeout != null) {
       try {
         return (long) (Float.parseFloat(timeout) * 1000);
@@ -687,12 +729,12 @@ public class Driver implements java.sql.Driver {
    * This method was added in v6.5, and simply throws an SQLException for an unimplemented method. I
    * decided to do it this way while implementing the JDBC2 extensions to JDBC, as it should help
    * keep the overall driver size down. It now requires the call Class and the function name to help
-   * when the driver is used with closed software that don't report the stack strace
+   * when the driver is used with closed software that don't report the stack trace
    *
    * @param callClass the call Class
    * @param functionName the name of the unimplemented function with the type of its arguments
    * @return PSQLException with a localized message giving the complete description of the
-   *         unimplemeted function
+   *         unimplemented function
    */
   public static SQLFeatureNotSupportedException notImplemented(Class<?> callClass,
       String functionName) {
@@ -702,7 +744,7 @@ public class Driver implements java.sql.Driver {
   }
 
   @Override
-  public java.util.logging.Logger getParentLogger() {
+  public Logger getParentLogger() {
     return PARENT_LOGGER;
   }
 

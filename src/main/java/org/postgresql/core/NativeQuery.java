@@ -31,7 +31,7 @@ public class NativeQuery {
     this(nativeSql, NO_BINDS, true, dml);
   }
 
-  public NativeQuery(String nativeSql, int[] bindPositions, boolean multiStatement, SqlCommand dml) {
+  public NativeQuery(String nativeSql, int /* @Nullable */ [] bindPositions, boolean multiStatement, SqlCommand dml) {
     this.nativeSql = nativeSql;
     this.bindPositions =
         bindPositions == null || bindPositions.length == 0 ? NO_BINDS : bindPositions;
@@ -54,7 +54,7 @@ public class NativeQuery {
 
     int queryLength = nativeSql.length();
     String[] params = new String[bindPositions.length];
-    for (int i = 1; i <= bindPositions.length; ++i) {
+    for (int i = 1; i <= bindPositions.length; i++) {
       String param = parameters == null ? "?" : parameters.toString(i, true);
       params[i - 1] = param;
       queryLength += param.length() - bindName(i).length();
@@ -62,7 +62,7 @@ public class NativeQuery {
 
     StringBuilder sbuf = new StringBuilder(queryLength);
     sbuf.append(nativeSql, 0, bindPositions[0]);
-    for (int i = 1; i <= bindPositions.length; ++i) {
+    for (int i = 1; i <= bindPositions.length; i++) {
       sbuf.append(params[i - 1]);
       int nextBind = i < bindPositions.length ? bindPositions[i] : nativeSql.length();
       sbuf.append(nativeSql, bindPositions[i - 1] + bindName(i).length(), nextBind);

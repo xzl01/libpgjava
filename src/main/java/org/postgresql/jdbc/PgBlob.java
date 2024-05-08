@@ -5,38 +5,48 @@
 
 package org.postgresql.jdbc;
 
+import org.postgresql.core.BaseConnection;
 import org.postgresql.largeobject.LargeObject;
 
+import java.io.InputStream;
+import java.sql.Blob;
 import java.sql.SQLException;
 
-public class PgBlob extends AbstractBlobClob implements java.sql.Blob {
+public class PgBlob extends AbstractBlobClob implements Blob {
 
-  public PgBlob(org.postgresql.core.BaseConnection conn, long oid) throws SQLException {
+  public PgBlob(BaseConnection conn, long oid) throws SQLException {
     super(conn, oid);
   }
 
-  public synchronized java.io.InputStream getBinaryStream(long pos, long length)
+  @Override
+  public InputStream getBinaryStream(long pos, long length)
       throws SQLException {
-    checkFreed();
-    LargeObject subLO = getLo(false).copy();
-    addSubLO(subLO);
-    if (pos > Integer.MAX_VALUE) {
-      subLO.seek64(pos - 1, LargeObject.SEEK_SET);
-    } else {
-      subLO.seek((int) pos - 1, LargeObject.SEEK_SET);
+    try (ResourceLock ignore = lock.obtain()) {
+      checkFreed();
+      LargeObject subLO = getLo(false).copy();
+      addSubLO(subLO);
+      if (pos > Integer.MAX_VALUE) {
+        subLO.seek64(pos - 1, LargeObject.SEEK_SET);
+      } else {
+        subLO.seek((int) pos - 1, LargeObject.SEEK_SET);
+      }
+      return subLO.getInputStream(length);
     }
-    return subLO.getInputStream(length);
   }
 
-  public synchronized int setBytes(long pos, byte[] bytes) throws SQLException {
+  @Override
+  public int setBytes(long pos, byte[] bytes) throws SQLException {
     return setBytes(pos, bytes, 0, bytes.length);
   }
 
-  public synchronized int setBytes(long pos, byte[] bytes, int offset, int len)
+  @Override
+  public int setBytes(long pos, byte[] bytes, int offset, int len)
       throws SQLException {
-    assertPosition(pos);
-    getLo(true).seek((int) (pos - 1));
-    getLo(true).write(bytes, offset, len);
-    return len;
+    try (ResourceLock ignore = lock.obtain()) {
+      assertPosition(pos);
+      getLo(true).seek((int) (pos - 1));
+      getLo(true).write(bytes, offset, len);
+      return len;
+    }
   }
 }

@@ -55,6 +55,18 @@ public class PreparedStatementTest extends BaseTest4 {
   }
 
   @Test
+  public void testSetBoolean() throws SQLException {
+    try (PreparedStatement ps = con.prepareStatement("select false union select (select ?)")) {
+      ps.setBoolean(1, true);
+
+      try (ResultSet rs = ps.executeQuery()) {
+        assert (rs.next());
+        rs.getBoolean(1);
+      }
+    }
+  }
+
+  @Test
   public void testTimestampTzSetNull() throws SQLException {
     PreparedStatement pstmt = con.prepareStatement("INSERT INTO timestamptztable (tstz) VALUES (?)");
 
@@ -96,11 +108,11 @@ public class PreparedStatementTest extends BaseTest4 {
 
     ResultSet rs = con.createStatement().executeQuery("select tt from timetable order by id asc");
     Assert.assertTrue(rs.next());
-    LocalTime localTime = (LocalTime)rs.getObject(1,LocalTime.class);
-    Assert.assertEquals( LocalTime.MAX, localTime);
+    LocalTime localTime = (LocalTime) rs.getObject(1, LocalTime.class);
+    Assert.assertEquals(LocalTime.MAX, localTime);
 
     Assert.assertTrue(rs.next());
-    localTime = (LocalTime)rs.getObject(1, LocalTime.class);
-    Assert.assertEquals( LocalTime.MIN, localTime);
+    localTime = (LocalTime) rs.getObject(1, LocalTime.class);
+    Assert.assertEquals(LocalTime.MIN, localTime);
   }
 }

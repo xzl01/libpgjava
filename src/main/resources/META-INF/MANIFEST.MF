@@ -1,12 +1,12 @@
 Manifest-Version: 1.0
-Implementation-Title: PostgreSQL JDBC Driver
 Bundle-License: BSD-2-Clause
-Automatic-Module-Name: org.postgresql.jdbc
-Implementation-Version: 42.3.1
+Implementation-Title: PostgreSQL JDBC Driver
+Implementation-Version: 42.7.3
 Specification-Vendor: Oracle Corporation
-Specification-Title: JDBC
-Implementation-Vendor-Id: org.postgresql
 Specification-Version: 4.2
+Specification-Title: JDBC
 Implementation-Vendor: PostgreSQL Global Development Group
+Implementation-Vendor-Id: org.postgresql
 Main-Class: org.postgresql.util.PGJDBCMain
+Automatic-Module-Name: org.postgresql.jdbc
 

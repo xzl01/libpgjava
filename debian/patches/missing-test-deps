@@ -5,44 +5,50 @@ junit: Packaged, but mvn doesn't find it
 
 --- a/pom.xml
 +++ b/pom.xml
-@@ -46,42 +46,6 @@
+@@ -47,48 +47,6 @@
              <version>debian</version>
              <optional>true</optional>
          </dependency>
 -        <dependency>
 -            <groupId>se.jiderhamn</groupId>
 -            <artifactId>classloader-leak-test-framework</artifactId>
--            <version>1.1.1</version>
+-            <version>1.1.2</version>
 -            <scope>test</scope>
 -        </dependency>
 -        <dependency>
 -            <groupId>junit</groupId>
 -            <artifactId>junit</artifactId>
--            <version>4.13</version>
+-            <version>4.13.2</version>
 -            <scope>test</scope>
 -        </dependency>
 -        <dependency>
 -            <groupId>org.junit.jupiter</groupId>
 -            <artifactId>junit-jupiter-api</artifactId>
--            <version>5.6.0</version>
+-            <version>5.10.2</version>
+-            <scope>test</scope>
+-        </dependency>
+-        <dependency>
+-            <groupId>uk.org.webcompere</groupId>
+-            <artifactId>system-stubs-jupiter</artifactId>
+-            <version>2.1.5</version>
 -            <scope>test</scope>
 -        </dependency>
 -        <dependency>
 -            <groupId>org.junit.jupiter</groupId>
 -            <artifactId>junit-jupiter-params</artifactId>
--            <version>5.6.0</version>
+-            <version>5.10.2</version>
 -            <scope>test</scope>
 -        </dependency>
 -        <dependency>
 -            <groupId>org.junit.jupiter</groupId>
 -            <artifactId>junit-jupiter-engine</artifactId>
--            <version>5.6.0</version>
+-            <version>5.10.2</version>
 -            <scope>test</scope>
 -        </dependency>
 -        <dependency>
 -            <groupId>org.junit.vintage</groupId>
 -            <artifactId>junit-vintage-engine</artifactId>
--            <version>5.6.0</version>
+-            <version>5.10.2</version>
 -            <scope>test</scope>
 -        </dependency>
      </dependencies>

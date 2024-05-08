@@ -1,3 +1,122 @@
+libpgjava (42.7.3-1) unstable; urgency=medium
+
+  * New upstream version 42.7.3.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 15 Mar 2024 15:13:39 +0100
+
+libpgjava (42.7.2-1) unstable; urgency=medium
+
+  * New upstream version 42.7.2. (CVE-2024-1597)
+
+ -- Christoph Berg <myon@debian.org>  Thu, 22 Feb 2024 11:46:47 +0100
+
+libpgjava (42.7.1-1) unstable; urgency=medium
+
+  * New upstream version 42.7.1.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 07 Dec 2023 23:27:15 +0100
+
+libpgjava (42.7.0-1) unstable; urgency=medium
+
+  * New upstream version 42.7.0.
+
+ -- Christoph Berg <myon@debian.org>  Tue, 21 Nov 2023 10:31:51 +0100
+
+libpgjava (42.6.0-2) unstable; urgency=medium
+
+  * Remove ancient Replaces/Conflicts. Thanks Helmut Grohne for the report.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 18 Oct 2023 14:05:07 +0200
+
+libpgjava (42.6.0-1) experimental; urgency=medium
+
+  * New upstream version 42.6.0.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 27 Mar 2023 09:36:55 +0200
+
+libpgjava (42.5.4-1) unstable; urgency=medium
+
+  * New upstream version 42.5.4.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 17 Feb 2023 18:19:35 +0100
+
+libpgjava (42.5.3-1) unstable; urgency=medium
+
+  * New upstream version 42.5.3.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 09 Feb 2023 11:26:33 +0100
+
+libpgjava (42.5.1-1) unstable; urgency=medium
+
+  * New upstream version 42.5.1, fixes CVE-2022-41946.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 24 Nov 2022 12:54:21 +0100
+
+libpgjava (42.5.0-1) unstable; urgency=medium
+
+  * New upstream version 42.5.0.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 26 Aug 2022 12:06:57 +0200
+
+libpgjava (42.4.2-1) unstable; urgency=medium
+
+  * New upstream version 42.4.2.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 22 Aug 2022 14:24:18 +0200
+
+libpgjava (42.4.1-1) unstable; urgency=medium
+
+  * New upstream version 42.4.1
+
+    Fixes SQL generated in PgResultSet.refresh() to escape column identifiers
+    so as to prevent SQL injection.
+    (Closes: #1016662, CVE-2022-31197, reported by Sho Kato)
+
+    Previously, the column names for both key and data columns in the table
+    were copied as-is into the generated SQL. This allowed a malicious table
+    with column names that include statement terminator to be parsed and
+    executed as multiple separate commands.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 08 Aug 2022 14:53:28 +0200
+
+libpgjava (42.4.0-1) unstable; urgency=medium
+
+  * New upstream version 42.4.0.
+
+ -- Christoph Berg <myon@debian.org>  Tue, 14 Jun 2022 15:18:49 +0200
+
+libpgjava (42.3.6-1) unstable; urgency=medium
+
+  * New upstream version 42.3.6.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 27 May 2022 14:56:40 +0200
+
+libpgjava (42.3.5-1) unstable; urgency=medium
+
+  * New upstream version 42.3.5.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 06 May 2022 16:51:03 +0200
+
+libpgjava (42.3.4-1) unstable; urgency=medium
+
+  * New upstream version 42.3.4.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 02 May 2022 15:56:41 +0200
+
+libpgjava (42.3.3-1) unstable; urgency=medium
+
+  * New upstream version 42.3.3.
+    https://github.com/pgjdbc/pgjdbc/security/advisories/GHSA-673j-qm5f-xpv8
+
+ -- Christoph Berg <myon@debian.org>  Thu, 17 Feb 2022 13:08:38 +0100
+
+libpgjava (42.3.2-1) unstable; urgency=medium
+
+  * New upstream version 42.3.2.
+    https://github.com/pgjdbc/pgjdbc/security/advisories/GHSA-v7wg-cpwc-24m4
+
+ -- Christoph Berg <myon@debian.org>  Fri, 04 Feb 2022 10:58:43 +0100
+
 libpgjava (42.3.1-1) unstable; urgency=medium
 
   * New upstream version 42.3.1.

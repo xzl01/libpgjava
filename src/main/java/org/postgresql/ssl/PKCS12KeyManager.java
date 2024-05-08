@@ -5,13 +5,13 @@
 
 package org.postgresql.ssl;
 
+import org.postgresql.jdbc.ResourceLock;
 import org.postgresql.util.GT;
 import org.postgresql.util.PSQLException;
 import org.postgresql.util.PSQLState;
 
 // import org.checkerframework.checker.nullness.qual.Nullable;
 
-import java.io.File;
 import java.io.FileInputStream;
 import java.net.Socket;
 import java.security.KeyStore;
@@ -31,10 +31,11 @@ import javax.security.auth.x500.X500Principal;
 public class PKCS12KeyManager implements X509KeyManager {
 
   private final CallbackHandler cbh;
-  private /* @Nullable */ PSQLException error = null;
+  private /* @Nullable */ PSQLException error;
   private final String keyfile;
   private final KeyStore keyStore;
-  boolean keystoreLoaded = false;
+  boolean keystoreLoaded;
+  private final ResourceLock lock = new ResourceLock();
 
   public PKCS12KeyManager(String pkcsFile, CallbackHandler cbh) throws PSQLException {
     try {
@@ -49,7 +50,7 @@ public class PKCS12KeyManager implements X509KeyManager {
   }
 
   /**
-   * getCertificateChain and getPrivateKey cannot throw exeptions, therefore any exception is stored
+   * getCertificateChain and getPrivateKey cannot throw exceptions, therefore any exception is stored
    * in {@link #error} and can be raised by this method.
    *
    * @throws PSQLException if any exception is stored in {@link #error} and can be raised
@@ -67,7 +68,7 @@ public class PKCS12KeyManager implements X509KeyManager {
   }
 
   @Override
-  public /* @Nullable */ String chooseClientAlias(String[] strings, Principal /* @Nullable */ [] principals,
+  public /* @Nullable */ String chooseClientAlias(String[] keyType, Principal /* @Nullable */ [] principals,
       /* @Nullable */ Socket socket) {
     if (principals == null || principals.length == 0) {
       // Postgres 8.4 and earlier do not send the list of accepted certificate authorities
@@ -81,14 +82,30 @@ public class PKCS12KeyManager implements X509KeyManager {
       if (certchain == null) {
         return null;
       } else {
-        X500Principal ourissuer = certchain[certchain.length - 1].getIssuerX500Principal();
+        X509Certificate cert = certchain[certchain.length - 1];
+        X500Principal ourissuer = cert.getIssuerX500Principal();
+        String certKeyType = cert.getPublicKey().getAlgorithm();
+        boolean keyTypeFound = false;
         boolean found = false;
-        for (Principal issuer : principals) {
-          if (ourissuer.equals(issuer)) {
-            found = true;
+        if (keyType != null && keyType.length > 0) {
+          for (String kt : keyType) {
+            if (kt.equalsIgnoreCase(certKeyType)) {
+              keyTypeFound = true;
+            }
+          }
+        } else {
+          // If no key types were passed in, assume we don't care
+          // about checking that the cert uses a particular key type.
+          keyTypeFound = true;
+        }
+        if (keyTypeFound) {
+          for (Principal issuer : principals) {
+            if (ourissuer.equals(issuer)) {
+              found = keyTypeFound;
+            }
           }
         }
-        return (found ? "user" : null);
+        return found ? "user" : null;
       }
     }
   }
@@ -116,7 +133,7 @@ public class PKCS12KeyManager implements X509KeyManager {
       X509Certificate[] x509Certificates = new X509Certificate[certs.length];
       int i = 0;
       for (Certificate cert : certs) {
-        x509Certificates[i++] = (X509Certificate)cert;
+        x509Certificates[i++] = (X509Certificate) cert;
       }
       return x509Certificates;
     } catch (Exception kse) {
@@ -140,8 +157,7 @@ public class PKCS12KeyManager implements X509KeyManager {
       if (pkEntry == null) {
         return null;
       }
-      PrivateKey myPrivateKey = pkEntry.getPrivateKey();
-      return myPrivateKey;
+      return pkEntry.getPrivateKey();
     } catch (Exception ioex ) {
       error = new PSQLException(GT.tr("Could not read SSL key file {0}.", keyfile),
         PSQLState.CONNECTION_FAILURE, ioex);
@@ -149,33 +165,34 @@ public class PKCS12KeyManager implements X509KeyManager {
     return null;
   }
 
-  private synchronized void loadKeyStore() throws Exception {
-
-    if (keystoreLoaded) {
-      return;
-    }
-    // We call back for the password
-    PasswordCallback pwdcb = new PasswordCallback(GT.tr("Enter SSL password: "), false);
-    try {
-      cbh.handle(new Callback[]{pwdcb});
-    } catch (UnsupportedCallbackException ucex) {
-      if ((cbh instanceof LibPQFactory.ConsoleCallbackHandler)
-          && ("Console is not available".equals(ucex.getMessage()))) {
-        error = new PSQLException(GT
-          .tr("Could not read password for SSL key file, console is not available."),
-          PSQLState.CONNECTION_FAILURE, ucex);
-      } else {
-        error =
-            new PSQLException(
-              GT.tr("Could not read password for SSL key file by callbackhandler {0}.",
-                cbh.getClass().getName()),
+  private void loadKeyStore() throws Exception {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (keystoreLoaded) {
+        return;
+      }
+      // We call back for the password
+      PasswordCallback pwdcb = new PasswordCallback(GT.tr("Enter SSL password: "), false);
+      try {
+        cbh.handle(new Callback[]{pwdcb});
+      } catch (UnsupportedCallbackException ucex) {
+        if ((cbh instanceof LibPQFactory.ConsoleCallbackHandler)
+            && ("Console is not available".equals(ucex.getMessage()))) {
+          error = new PSQLException(GT
+              .tr("Could not read password for SSL key file, console is not available."),
               PSQLState.CONNECTION_FAILURE, ucex);
+        } else {
+          error =
+              new PSQLException(
+                  GT.tr("Could not read password for SSL key file by callbackhandler {0}.",
+                      cbh.getClass().getName()),
+                  PSQLState.CONNECTION_FAILURE, ucex);
+        }
+
       }
 
+      keyStore.load(new FileInputStream(keyfile), pwdcb.getPassword());
+      keystoreLoaded = true;
     }
-
-    keyStore.load(new FileInputStream(new File(keyfile)), pwdcb.getPassword());
-    keystoreLoaded = true;
   }
 
 }

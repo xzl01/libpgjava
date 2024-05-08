@@ -16,13 +16,13 @@ public final class DriverInfo {
   // Driver name
   public static final String DRIVER_NAME = "PostgreSQL JDBC Driver";
   public static final String DRIVER_SHORT_NAME = "PgJDBC";
-  public static final String DRIVER_VERSION = "42.3.1";
+  public static final String DRIVER_VERSION = "42.7.3";
   public static final String DRIVER_FULL_NAME = DRIVER_NAME + " " + DRIVER_VERSION;
 
   // Driver version
   public static final int MAJOR_VERSION = 42;
-  public static final int MINOR_VERSION = 3;
-  public static final int PATCH_VERSION = 1;
+  public static final int MINOR_VERSION = 7;
+  public static final int PATCH_VERSION = 3;
 
   // JDBC specification
   public static final String JDBC_VERSION = "4.2";

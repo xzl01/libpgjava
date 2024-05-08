@@ -27,17 +27,19 @@ class CompositeQuery implements Query {
     this.offsets = offsets;
   }
 
+  @Override
   public ParameterList createParameterList() {
     SimpleParameterList[] subparams = new SimpleParameterList[subqueries.length];
-    for (int i = 0; i < subqueries.length; ++i) {
+    for (int i = 0; i < subqueries.length; i++) {
       subparams[i] = (SimpleParameterList) subqueries[i].createParameterList();
     }
     return new CompositeParameterList(subparams, offsets);
   }
 
+  @Override
   public String toString(/* @Nullable */ ParameterList parameters) {
     StringBuilder sbuf = new StringBuilder(subqueries[0].toString());
-    for (int i = 1; i < subqueries.length; ++i) {
+    for (int i = 1; i < subqueries.length; i++) {
       sbuf.append(';');
       sbuf.append(subqueries[i]);
     }
@@ -47,7 +49,7 @@ class CompositeQuery implements Query {
   @Override
   public String getNativeSql() {
     StringBuilder sbuf = new StringBuilder(subqueries[0].getNativeSql());
-    for (int i = 1; i < subqueries.length; ++i) {
+    for (int i = 1; i < subqueries.length; i++) {
       sbuf.append(';');
       sbuf.append(subqueries[i].getNativeSql());
     }
@@ -59,20 +61,24 @@ class CompositeQuery implements Query {
     return null;
   }
 
+  @Override
   public String toString() {
     return toString(null);
   }
 
+  @Override
   public void close() {
     for (SimpleQuery subquery : subqueries) {
       subquery.close();
     }
   }
 
+  @Override
   public Query[] getSubqueries() {
     return subqueries;
   }
 
+  @Override
   public boolean isStatementDescribed() {
     for (SimpleQuery subquery : subqueries) {
       if (!subquery.isStatementDescribed()) {
@@ -82,6 +88,7 @@ class CompositeQuery implements Query {
     return true;
   }
 
+  @Override
   public boolean isEmpty() {
     for (SimpleQuery subquery : subqueries) {
       if (!subquery.isEmpty()) {
@@ -91,6 +98,7 @@ class CompositeQuery implements Query {
     return true;
   }
 
+  @Override
   public int getBatchSize() {
     return 0; // no-op, unsupported
   }

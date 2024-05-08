@@ -32,6 +32,7 @@ import java.io.PrintWriter;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.sql.ParameterMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -60,7 +61,7 @@ public class PreparedStatementTest extends BaseTest4 {
 
   @Parameterized.Parameters(name = "binary = {0}")
   public static Iterable<Object[]> data() {
-    Collection<Object[]> ids = new ArrayList<Object[]>();
+    Collection<Object[]> ids = new ArrayList<>();
     for (BinaryMode binaryMode : BinaryMode.values()) {
       ids.add(new Object[]{binaryMode});
     }
@@ -317,7 +318,7 @@ public class PreparedStatementTest extends BaseTest4 {
     ResultSet rs = pstmt.executeQuery();
 
     assertTrue(rs.next());
-    assertEquals("ok",rs.getObject(1));
+    assertEquals("ok", rs.getObject(1));
 
     rs.close();
     pstmt.close();
@@ -358,7 +359,7 @@ public class PreparedStatementTest extends BaseTest4 {
 
     // Test with standard_conforming_strings turned off.
     stmt.execute("SET standard_conforming_strings TO off");
-    for (int i = 0; i < testStrings.length; ++i) {
+    for (int i = 0; i < testStrings.length; i++) {
       PreparedStatement pstmt = con.prepareStatement("SELECT '" + testStrings[i] + "'");
       ResultSet rs = pstmt.executeQuery();
       assertTrue(rs.next());
@@ -370,7 +371,7 @@ public class PreparedStatementTest extends BaseTest4 {
     // Test with standard_conforming_strings turned off...
     // ... using the escape string syntax (E'').
     stmt.execute("SET standard_conforming_strings TO on");
-    for (int i = 0; i < testStrings.length; ++i) {
+    for (int i = 0; i < testStrings.length; i++) {
       PreparedStatement pstmt = con.prepareStatement("SELECT E'" + testStrings[i] + "'");
       ResultSet rs = pstmt.executeQuery();
       assertTrue(rs.next());
@@ -379,7 +380,7 @@ public class PreparedStatementTest extends BaseTest4 {
       pstmt.close();
     }
     // ... using standard conforming input strings.
-    for (int i = 0; i < testStrings.length; ++i) {
+    for (int i = 0; i < testStrings.length; i++) {
       PreparedStatement pstmt = con.prepareStatement("SELECT '" + testStringsStdConf[i] + "'");
       ResultSet rs = pstmt.executeQuery();
       assertTrue(rs.next());
@@ -504,14 +505,17 @@ public class PreparedStatementTest extends BaseTest4 {
     st = con.prepareStatement("select ??- lseg '((-1,0),(1,0))';");
     rs = st.executeQuery();
     assertTrue(rs.next());
-    assertEquals("t", rs.getString(1));
+    // Bool values in binary mode are first converted to their Java type (Boolean), and then
+    // converted to String, which means that we receive 'true'. Bool values in text mode are
+    // returned as the same text value that was returned by the server, i.e. 't'.
+    assertEquals(binaryMode == BinaryMode.FORCE && preferQueryMode != PreferQueryMode.SIMPLE ? "true" : "t", rs.getString(1));
     assertFalse(rs.next());
     st.close();
 
     st = con.prepareStatement("select lseg '((-1,0),(1,0))' ??# box '((-2,-2),(2,2))';");
     rs = st.executeQuery();
     assertTrue(rs.next());
-    assertEquals("t", rs.getString(1));
+    assertEquals(binaryMode == BinaryMode.FORCE && preferQueryMode != PreferQueryMode.SIMPLE ? "true" : "t", rs.getString(1));
     assertFalse(rs.next());
     st.close();
   }
@@ -542,7 +546,7 @@ public class PreparedStatementTest extends BaseTest4 {
     values[3] = new BigDecimal("-" + minValueString);
 
     pstmt = con.prepareStatement("insert into numeric_tab values (?,?,?,?,?)");
-    for (int i = 1; i < 5 ; i++) {
+    for (int i = 1; i < 5; i++) {
       pstmt.setBigDecimal(i, values[i - 1]);
     }
 
@@ -553,7 +557,7 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt = con.prepareStatement("select * from numeric_tab");
     ResultSet rs = pstmt.executeQuery();
     assertTrue(rs.next());
-    for (int i = 1; i < 5 ; i++) {
+    for (int i = 1; i < 5; i++) {
       assertTrue(rs.getBigDecimal(i).compareTo(values[i - 1]) == 0);
     }
     rs.getDouble(5);
@@ -722,7 +726,7 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.setObject(2, BigDecimal.ONE, Types.BOOLEAN);
     pstmt.setObject(3, 0L, Types.BOOLEAN);
     pstmt.setObject(4, 0x1, Types.BOOLEAN);
-    pstmt.setObject(5, new Float(0), Types.BOOLEAN);
+    pstmt.setObject(5, (float) 0, Types.BOOLEAN);
     pstmt.setObject(5, 1.0d, Types.BOOLEAN);
     pstmt.setObject(5, 0.0f, Types.BOOLEAN);
     pstmt.setObject(6, Integer.valueOf("1"), Types.BOOLEAN);
@@ -855,11 +859,11 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.executeUpdate();
     pstmt.close();
 
-    Integer maxInteger = new Integer(2147483647);
-    Integer minInteger = new Integer(-2147483648);
+    Integer maxInteger = 2147483647;
+    Integer minInteger = -2147483648;
 
-    Double maxFloat = new Double(2147483647);
-    Double minFloat = new Double(-2147483648);
+    Double maxFloat = 2147483647.0;
+    Double minFloat = (double) -2147483648;
 
     pstmt = con.prepareStatement("insert into float_tab values (?,?,?)");
     pstmt.setObject(1, maxInteger, Types.FLOAT);
@@ -892,8 +896,8 @@ public class PreparedStatementTest extends BaseTest4 {
 
     String maxStringFloat = "1.0E37";
     String minStringFloat = "1.0E-37";
-    Double maxFloat = new Double(1.0E37);
-    Double minFloat = new Double(1.0E-37);
+    Double maxFloat = 1.0E37;
+    Double minFloat = 1.0E-37;
 
     pstmt = con.prepareStatement("insert into float_tab values (?,?,?)");
     pstmt.setObject(1, maxStringFloat, Types.FLOAT);
@@ -935,8 +939,8 @@ public class PreparedStatementTest extends BaseTest4 {
 
     BigDecimal maxBigDecimalFloat = new BigDecimal("1.0E37");
     BigDecimal minBigDecimalFloat = new BigDecimal("1.0E-37");
-    Double maxFloat = new Double(1.0E37);
-    Double minFloat = new Double(1.0E-37);
+    Double maxFloat = 1.0E37;
+    Double minFloat = 1.0E-37;
 
     pstmt = con.prepareStatement("insert into float_tab values (?,?,?)");
     pstmt.setObject(1, maxBigDecimalFloat, Types.FLOAT);
@@ -967,10 +971,10 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.executeUpdate();
     pstmt.close();
 
-    Integer maxInt = new Integer(127);
-    Integer minInt = new Integer(-127);
-    Float maxIntFloat = new Float(127);
-    Float minIntFloat = new Float(-127);
+    Integer maxInt = 127;
+    Integer minInt = -127;
+    Float maxIntFloat = 127F;
+    Float minIntFloat = (float) -127;
 
     pstmt = con.prepareStatement("insert into tiny_int values (?,?,?)");
     pstmt.setObject(1, maxIntFloat, Types.TINYINT);
@@ -1006,9 +1010,9 @@ public class PreparedStatementTest extends BaseTest4 {
     assertNull("rs.getBigDecimal(scale=0)", rs.getBigDecimal(3, 0));
     assertTrue("rs.getBigDecimal after rs.getLong", rs.wasNull());
     assertEquals("maxInt as rs.getBigDecimal(scale=1)",
-        BigDecimal.valueOf(maxInt).setScale(1, BigDecimal.ROUND_HALF_EVEN), rs.getBigDecimal(1, 1));
+        BigDecimal.valueOf(maxInt).setScale(1, RoundingMode.HALF_EVEN), rs.getBigDecimal(1, 1));
     assertEquals("minInt as rs.getBigDecimal(scale=1)",
-        BigDecimal.valueOf(minInt).setScale(1, BigDecimal.ROUND_HALF_EVEN), rs.getBigDecimal(2, 1));
+        BigDecimal.valueOf(minInt).setScale(1, RoundingMode.HALF_EVEN), rs.getBigDecimal(2, 1));
     rs.getFloat(3);
     assertTrue(rs.wasNull());
     rs.close();
@@ -1023,10 +1027,10 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.executeUpdate();
     pstmt.close();
 
-    Integer maxInt = new Integer(32767);
-    Integer minInt = new Integer(-32768);
-    Float maxIntFloat = new Float(32767);
-    Float minIntFloat = new Float(-32768);
+    Integer maxInt = 32767;
+    Integer minInt = -32768;
+    Float maxIntFloat = 32767F;
+    Float minIntFloat = (float) -32768;
 
     pstmt = con.prepareStatement("insert into small_int values (?,?,?)");
     pstmt.setObject(1, maxIntFloat, Types.SMALLINT);
@@ -1056,10 +1060,10 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.executeUpdate();
     pstmt.close();
 
-    Integer maxInt = new Integer(1000);
-    Integer minInt = new Integer(-1000);
-    Float maxIntFloat = new Float(1000);
-    Float minIntFloat = new Float(-1000);
+    Integer maxInt = 1000;
+    Integer minInt = -1000;
+    Float maxIntFloat = 1000F;
+    Float minIntFloat = (float) -1000;
 
     pstmt = con.prepareStatement("insert into int_tab values (?,?,?)");
     pstmt.setObject(1, maxIntFloat, Types.INTEGER);
@@ -1090,8 +1094,8 @@ public class PreparedStatementTest extends BaseTest4 {
     pstmt.executeUpdate();
     pstmt.close();
 
-    Double dBooleanTrue = new Double(1);
-    Double dBooleanFalse = new Double(0);
+    Double dBooleanTrue = 1.0;
+    Double dBooleanFalse = (double) 0;
 
     pstmt = con.prepareStatement("insert into double_tab values (?,?,?)");
     pstmt.setObject(1, Boolean.TRUE, Types.DOUBLE);
@@ -1345,7 +1349,7 @@ public class PreparedStatementTest extends BaseTest4 {
   @Test
   public void testSetObjectCharacter() throws SQLException {
     PreparedStatement ps = con.prepareStatement("INSERT INTO texttable(te) VALUES (?)");
-    ps.setObject(1, new Character('z'));
+    ps.setObject(1, 'z');
     ps.executeUpdate();
     ps.close();
   }
@@ -1358,7 +1362,7 @@ public class PreparedStatementTest extends BaseTest4 {
   @Test
   public void testStatementDescribe() throws SQLException {
     PreparedStatement pstmt = con.prepareStatement("SELECT ?::int");
-    pstmt.setObject(1, new Integer(2), Types.OTHER);
+    pstmt.setObject(1, 2, Types.OTHER);
     for (int i = 0; i < 10; i++) {
       ResultSet rs = pstmt.executeQuery();
       assertTrue(rs.next());
@@ -1456,15 +1460,19 @@ public class PreparedStatementTest extends BaseTest4 {
   @Test
   public void testInappropriateStatementSharing() throws SQLException {
     PreparedStatement ps = con.prepareStatement("SELECT ?::timestamp");
+    assertFirstParameterTypeName("after prepare ?::timestamp bind type should be timestamp", "timestamp", ps);
     try {
       Timestamp ts = new Timestamp(1474997614836L);
       // Since PreparedStatement isn't cached immediately, we need to some warm up
-      for (int i = 0; i < 3; ++i) {
+      for (int i = 0; i < 3; i++) {
         ResultSet rs;
 
         // Flip statement to use Oid.DATE
         ps.setNull(1, Types.DATE);
+        assertFirstParameterTypeName("set parameter to DATE", "date", ps);
         rs = ps.executeQuery();
+        assertFirstParameterTypeName("set parameter to DATE (executeQuery should not affect parameterMetadata)",
+            "date", ps);
         try {
           assertTrue(rs.next());
           assertNull("NULL DATE converted to TIMESTAMP should return NULL value on getObject",
@@ -1475,7 +1483,10 @@ public class PreparedStatementTest extends BaseTest4 {
 
         // Flop statement to use Oid.UNSPECIFIED
         ps.setTimestamp(1, ts);
+        assertFirstParameterTypeName("set parameter to Timestamp", "timestamp", ps);
         rs = ps.executeQuery();
+        assertFirstParameterTypeName("set parameter to Timestamp (executeQuery should not affect parameterMetadata)",
+            "timestamp", ps);
         try {
           assertTrue(rs.next());
           assertEquals(
@@ -1488,6 +1499,15 @@ public class PreparedStatementTest extends BaseTest4 {
     } finally {
       ps.close();
     }
+  }
+
+  private void assertFirstParameterTypeName(String msg, String expected, PreparedStatement ps) throws SQLException {
+    if (preferQueryMode == PreferQueryMode.SIMPLE) {
+      return;
+    }
+    ParameterMetaData pmd = ps.getParameterMetaData();
+    assertEquals("getParameterMetaData().getParameterTypeName(1) " + msg,
+        expected, pmd.getParameterTypeName(1));
   }
 
   @Test

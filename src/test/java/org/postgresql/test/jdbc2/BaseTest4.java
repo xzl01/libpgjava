@@ -5,8 +5,12 @@
 
 package org.postgresql.test.jdbc2;
 
+import static org.junit.Assert.assertEquals;
+
 import org.postgresql.PGConnection;
 import org.postgresql.PGProperty;
+import org.postgresql.core.BaseConnection;
+import org.postgresql.core.Oid;
 import org.postgresql.core.Version;
 import org.postgresql.jdbc.PreferQueryMode;
 import org.postgresql.test.TestUtil;
@@ -17,7 +21,9 @@ import org.junit.Before;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Locale;
 import java.util.Properties;
+import java.util.function.Supplier;
 
 public class BaseTest4 {
 
@@ -34,11 +40,11 @@ public class BaseTest4 {
   }
 
   public enum StringType {
-    UNSPECIFIED, VARCHAR;
+    UNSPECIFIED, VARCHAR
   }
 
   protected Connection con;
-  private BinaryMode binaryMode;
+  protected BinaryMode binaryMode;
   private ReWriteBatchedInserts reWriteBatchedInserts;
   protected PreferQueryMode preferQueryMode;
   private StringType stringType;
@@ -51,12 +57,13 @@ public class BaseTest4 {
       PGProperty.REWRITE_BATCHED_INSERTS.set(props, true);
     }
     if (stringType != null) {
-      PGProperty.STRING_TYPE.set(props, stringType.name().toLowerCase());
+      PGProperty.STRING_TYPE.set(props, stringType.name().toLowerCase(Locale.ROOT));
     }
   }
 
   protected void forceBinary(Properties props) {
     PGProperty.PREPARE_THRESHOLD.set(props, -1);
+    PGProperty.BINARY_TRANSFER_ENABLE.set(props, Oid.BOOL);
   }
 
   public final void setBinaryMode(BinaryMode binaryMode) {
@@ -92,12 +99,18 @@ public class BaseTest4 {
 
   public void assumeByteaSupported() {
     Assume.assumeTrue("bytea is not supported in simple protocol execution mode",
-        preferQueryMode.compareTo(PreferQueryMode.EXTENDED) >= 0);
+        preferQueryMode != PreferQueryMode.SIMPLE);
+  }
+
+  public static void assumeCallableStatementsSupported(Connection con) throws SQLException {
+    PreferQueryMode preferQueryMode = con.unwrap(PGConnection.class).getPreferQueryMode();
+    Assume.assumeTrue("callable statements are not fully supported in simple protocol execution mode",
+        preferQueryMode != PreferQueryMode.SIMPLE);
   }
 
   public void assumeCallableStatementsSupported() {
     Assume.assumeTrue("callable statements are not fully supported in simple protocol execution mode",
-        preferQueryMode.compareTo(PreferQueryMode.EXTENDED) >= 0);
+        preferQueryMode != PreferQueryMode.SIMPLE);
   }
 
   public void assumeBinaryModeRegular() {
@@ -106,6 +119,10 @@ public class BaseTest4 {
 
   public void assumeBinaryModeForce() {
     Assume.assumeTrue(binaryMode == BinaryMode.FORCE);
+    Assume.assumeTrue(preferQueryMode != PreferQueryMode.SIMPLE);
+  }
+
+  public void assumeNotSimpleQueryMode() {
     Assume.assumeTrue(preferQueryMode != PreferQueryMode.SIMPLE);
   }
 
@@ -123,4 +140,13 @@ public class BaseTest4 {
     Assume.assumeTrue(TestUtil.haveMinimumServerVersion(con, version));
   }
 
+  protected void assertBinaryForReceive(int oid, boolean expected, Supplier<String> message) throws SQLException {
+    assertEquals(message.get() + ", useBinaryForReceive(oid=" + oid + ")", expected,
+        con.unwrap(BaseConnection.class).getQueryExecutor().useBinaryForReceive(oid));
+  }
+
+  protected void assertBinaryForSend(int oid, boolean expected, Supplier<String> message) throws SQLException {
+    assertEquals(message.get() + ", useBinaryForSend(oid=" + oid + ")", expected,
+        con.unwrap(BaseConnection.class).getQueryExecutor().useBinaryForSend(oid));
+  }
 }

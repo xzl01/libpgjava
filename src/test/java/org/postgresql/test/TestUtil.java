@@ -13,6 +13,7 @@ import org.postgresql.core.TransactionState;
 import org.postgresql.core.Version;
 import org.postgresql.jdbc.GSSEncMode;
 import org.postgresql.jdbc.PgConnection;
+import org.postgresql.jdbc.ResourceLock;
 import org.postgresql.util.PSQLException;
 
 // import org.checkerframework.checker.nullness.qual.Nullable;
@@ -51,11 +52,17 @@ public class TestUtil {
   public static final String SERVER_HOST_PORT_PROP = "_test_hostport";
   public static final String DATABASE_PROP = "_test_database";
 
+  private static final ResourceLock lock = new ResourceLock();
+
   /*
    * Returns the Test database JDBC URL
    */
   public static String getURL() {
-    return getURL(getServer(), + getPort());
+    return getURL(getServer(), getPort());
+  }
+
+  public static String getURL(String database) {
+    return getURL(getServer() + ":" + getPort(), database);
   }
 
   public static String getURL(String server, int port) {
@@ -63,16 +70,6 @@ public class TestUtil {
   }
 
   public static String getURL(String hostport, String database) {
-    String logLevel = "";
-    if (getLogLevel() != null && !getLogLevel().equals("")) {
-      logLevel = "&loggerLevel=" + getLogLevel();
-    }
-
-    String logFile = "";
-    if (getLogFile() != null && !getLogFile().equals("")) {
-      logFile = "&loggerFile=" + getLogFile();
-    }
-
     String protocolVersion = "";
     if (getProtocolVersion() != 0) {
       protocolVersion = "&protocolVersion=" + getProtocolVersion();
@@ -84,7 +81,7 @@ public class TestUtil {
     }
 
     String binaryTransfer = "";
-    if (getBinaryTransfer() != null && !getBinaryTransfer().equals("")) {
+    if (getBinaryTransfer() != null && !"".equals(getBinaryTransfer())) {
       binaryTransfer = "&binaryTransfer=" + getBinaryTransfer();
     }
 
@@ -107,8 +104,6 @@ public class TestUtil {
         + hostport + "/"
         + database
         + "?ApplicationName=Driver Tests"
-        + logLevel
-        + logFile
         + protocolVersion
         + options
         + binaryTransfer
@@ -200,20 +195,6 @@ public class TestUtil {
   }
 
   /*
-   * Returns the log level to use
-   */
-  public static String getLogLevel() {
-    return System.getProperty("loggerLevel");
-  }
-
-  /*
-   * Returns the log file to use
-   */
-  public static String getLogFile() {
-    return System.getProperty("loggerFile");
-  }
-
-  /*
    * Returns the binary transfer mode to use
    */
   public static String getBinaryTransfer() {
@@ -242,7 +223,7 @@ public class TestUtil {
     }
   }
 
-  private static boolean initialized = false;
+  private static boolean initialized;
 
   public static Properties loadPropertyFiles(String... names) {
     Properties p = new Properties();
@@ -268,11 +249,13 @@ public class TestUtil {
     return p;
   }
 
-  private static Properties sslTestProperties = null;
+  private static Properties sslTestProperties;
 
-  private static synchronized void initSslTestProperties() {
-    if (sslTestProperties == null) {
-      sslTestProperties = TestUtil.loadPropertyFiles("ssltest.properties");
+  private static void initSslTestProperties() {
+    try (ResourceLock ignore = lock.obtain()) {
+      if (sslTestProperties == null) {
+        sslTestProperties = TestUtil.loadPropertyFiles("ssltest.properties");
+      }
     }
   }
 
@@ -291,7 +274,7 @@ public class TestUtil {
   }
 
   public static void initDriver() {
-    synchronized (TestUtil.class) {
+    try (ResourceLock ignore = lock.obtain()) {
       if (initialized) {
         return;
       }
@@ -330,14 +313,18 @@ public class TestUtil {
    *         functions now as of 4/14
    */
   public static Connection openPrivilegedDB() throws SQLException {
+    return openPrivilegedDB(getDatabase());
+  }
+
+  public static Connection openPrivilegedDB(String databaseName) throws SQLException {
     initDriver();
     Properties properties = new Properties();
 
-    PGProperty.GSS_ENC_MODE.set(properties,getGSSEncMode().value);
-    properties.setProperty("user", getPrivilegedUser());
-    properties.setProperty("password", getPrivilegedPassword());
-    properties.setProperty("options", "-c synchronous_commit=on");
-    return DriverManager.getConnection(getURL(), properties);
+    PGProperty.GSS_ENC_MODE.set(properties, getGSSEncMode().value);
+    PGProperty.USER.set(properties, getPrivilegedUser());
+    PGProperty.PASSWORD.set(properties, getPrivilegedPassword());
+    PGProperty.OPTIONS.set(properties, "-c synchronous_commit=on");
+    return DriverManager.getConnection(getURL(databaseName), properties);
 
   }
 
@@ -348,9 +335,9 @@ public class TestUtil {
     PGProperty.REPLICATION.set(properties, "database");
     //Only simple query protocol available for replication connection
     PGProperty.PREFER_QUERY_MODE.set(properties, "simple");
-    properties.setProperty("username", TestUtil.getPrivilegedUser());
-    properties.setProperty("password", TestUtil.getPrivilegedPassword());
-    properties.setProperty("options", "-c synchronous_commit=on");
+    PGProperty.USER.set(properties, TestUtil.getPrivilegedUser());
+    PGProperty.PASSWORD.set(properties, TestUtil.getPrivilegedPassword());
+    PGProperty.OPTIONS.set(properties, "-c synchronous_commit=on");
     return TestUtil.openDB(properties);
   }
 
@@ -371,7 +358,7 @@ public class TestUtil {
     initDriver();
 
     // Allow properties to override the user name.
-    String user = props.getProperty("username");
+    String user = PGProperty.USER.getOrDefault(props);
     if (user == null) {
       user = getUser();
     }
@@ -379,14 +366,14 @@ public class TestUtil {
       throw new IllegalArgumentException(
           "user name is not specified. Please specify 'username' property via -D or build.properties");
     }
-    props.setProperty("user", user);
+    PGProperty.USER.set(props, user);
 
     // Allow properties to override the password.
-    String password = props.getProperty("password");
+    String password = PGProperty.PASSWORD.getOrDefault(props);
     if (password == null) {
       password = getPassword() != null ? getPassword() : "";
     }
-    props.setProperty("password", password);
+    PGProperty.PASSWORD.set(props, password);
 
     String sslPassword = getSslPassword();
     if (sslPassword != null) {
@@ -512,16 +499,28 @@ public class TestUtil {
    */
   public static void createView(Connection con, String viewName, String query)
       throws SQLException {
-    Statement st = con.createStatement();
-    try {
+    try ( Statement st = con.createStatement() ) {
       // Drop the view
       dropView(con, viewName);
 
       String sql = "CREATE VIEW " + viewName + " AS " + query;
 
       st.executeUpdate(sql);
-    } finally {
-      closeQuietly(st);
+    }
+  }
+
+  /*
+   * Helper - creates a materialized view
+   */
+  public static void createMaterializedView(Connection con, String matViewName, String query)
+      throws SQLException {
+    try ( Statement st = con.createStatement() ) {
+      // Drop the view
+      dropMaterializedView(con, matViewName);
+
+      String sql = "CREATE MATERIALIZED VIEW " + matViewName + " AS " + query;
+
+      st.executeUpdate(sql);
     }
   }
 
@@ -629,10 +628,24 @@ public class TestUtil {
   }
 
   /*
+   * Helper - drops a materialized view
+   */
+  public static void dropMaterializedView(Connection con, String matView) throws SQLException {
+    dropObject(con, "MATERIALIZED VIEW", matView);
+  }
+
+  /*
    * Helper - drops a type
    */
   public static void dropType(Connection con, String type) throws SQLException {
     dropObject(con, "TYPE", type);
+  }
+
+  /*
+   * Drops a function with a given signature.
+   */
+  public static void dropFunction(Connection con, String name, String arguments) throws SQLException {
+    dropObject(con, "FUNCTION", name + "(" + arguments + ")");
   }
 
   private static void dropObject(Connection con, String type, String name) throws SQLException {
@@ -769,9 +782,16 @@ public class TestUtil {
     return false;
   }
 
+  public static void assumeHaveMinimumServerVersion(Version version)
+      throws SQLException {
+    try (Connection conn = openPrivilegedDB()) {
+      Assume.assumeTrue(TestUtil.haveMinimumServerVersion(conn, version));
+    }
+  }
+
   public static boolean haveMinimumJVMVersion(String version) {
     String jvm = java.lang.System.getProperty("java.version");
-    return (jvm.compareTo(version) >= 0);
+    return jvm.compareTo(version) >= 0;
   }
 
   public static boolean haveIntegerDateTimes(Connection con) {
@@ -808,7 +828,7 @@ public class TestUtil {
   }
 
   public static List<String> resultSetToLines(ResultSet rs) throws SQLException {
-    List<String> res = new ArrayList<String>();
+    List<String> res = new ArrayList<>();
     ResultSetMetaData rsmd = rs.getMetaData();
     StringBuilder sb = new StringBuilder();
     while (rs.next()) {
@@ -1007,6 +1027,21 @@ public class TestUtil {
   }
 
   /**
+   * Same as queryForString(...) above but with a single string param.
+   */
+  public static String queryForString(Connection conn, String sql, String param) throws SQLException {
+    PreparedStatement stmt = conn.prepareStatement(sql);
+    stmt.setString(1, param);
+    ResultSet rs = stmt.executeQuery();
+    Assert.assertTrue("Query should have returned exactly one row but none was found: " + sql, rs.next());
+    String value = rs.getString(1);
+    Assert.assertFalse("Query should have returned exactly one row but more than one found: " + sql, rs.next());
+    rs.close();
+    stmt.close();
+    return value;
+  }
+
+  /**
    * Execute a SQL query with a given connection, fetch the first row, and return its
    * boolean value.
    */
@@ -1069,8 +1104,8 @@ public class TestUtil {
   private static Connection createPrivilegedConnection(Connection conn) throws SQLException {
     String url = conn.getMetaData().getURL();
     Properties props = new Properties(conn.getClientInfo());
-    props.setProperty("user", getPrivilegedUser());
-    props.setProperty("password", getPrivilegedPassword());
+    PGProperty.USER.set(props, getPrivilegedUser());
+    PGProperty.PASSWORD.set(props, getPrivilegedPassword());
     return DriverManager.getConnection(url, props);
   }
 
@@ -1137,7 +1172,10 @@ public class TestUtil {
     }
   }
 
-  public static void execute(String sql, Connection connection) throws SQLException {
+  /**
+   * Executes given SQL via {@link Statement#execute(String)} on a given connection.
+   */
+  public static void execute(Connection connection, String sql) throws SQLException {
     try (Statement stmt = connection.createStatement()) {
       stmt.execute(sql);
     }

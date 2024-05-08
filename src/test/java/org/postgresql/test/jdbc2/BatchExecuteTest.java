@@ -47,7 +47,7 @@ public class BatchExecuteTest extends BaseTest4 {
 
   @Parameterized.Parameters(name = "binary = {0}, insertRewrite = {1}")
   public static Iterable<Object[]> data() {
-    Collection<Object[]> ids = new ArrayList<Object[]>();
+    Collection<Object[]> ids = new ArrayList<>();
     for (BinaryMode binaryMode : BinaryMode.values()) {
       for (boolean insertRewrite : new boolean[]{false, true}) {
         ids.add(new Object[]{binaryMode, insertRewrite});
@@ -500,7 +500,7 @@ public class BatchExecuteTest extends BaseTest4 {
    * The second bind identifies the object class as String so it calls setString internally. This
    * sets the type to 1043 (varchar).
    *
-   * The third and subsequent binds, whether null or non-null, will get type 1043, becaues there's
+   * The third and subsequent binds, whether null or non-null, will get type 1043, because there's
    * logic to avoid overwriting a known parameter type with the unknown type oid. This is why the
    * issue can only occur when null is the first entry.
    *
@@ -619,7 +619,7 @@ public class BatchExecuteTest extends BaseTest4 {
         ps.executeBatch();
       }
 
-      ps.setObject(1, new Double(43));
+      ps.setObject(1, 43.0);
       ps.setObject(2, new Date(43));
       ps.addBatch();
       ps.setNull(1, Types.SMALLINT);
@@ -627,7 +627,7 @@ public class BatchExecuteTest extends BaseTest4 {
       ps.addBatch();
       ps.executeBatch();
 
-      ps.setObject(1, new Double(45));
+      ps.setObject(1, 45.0);
       ps.setObject(2, new Date(45)); // <-- this causes "oid of bind unknown, send Describe"
       ps.addBatch();
       ps.setNull(1, Types.SMALLINT);
@@ -642,7 +642,7 @@ public class BatchExecuteTest extends BaseTest4 {
 
       // This execution with (double, unknown) passes isPreparedForTypes check, and causes
       // the failure
-      ps.setObject(1, new Double(47));
+      ps.setObject(1, 47.0);
       ps.setObject(2, new Date(47));
       ps.addBatch();
       ps.executeBatch();
@@ -1304,7 +1304,7 @@ Server SQLState: 25001)
       int rowsInserted = insertRewrite ? Statement.SUCCESS_NO_INFO : 2;
       Assert.assertEquals(
           "Inserting two multi-valued statements with two rows each. Expecting {2, 2} rows inserted (or SUCCESS_NO_INFO)",
-          Arrays.toString(new int[] { rowsInserted, rowsInserted }),
+          Arrays.toString(new int[]{rowsInserted, rowsInserted}),
           Arrays.toString(outcome));
     } catch (SQLException sqle) {
       Assert.fail("Failed to execute two statements added to a batch. Reason:" + sqle.getMessage());

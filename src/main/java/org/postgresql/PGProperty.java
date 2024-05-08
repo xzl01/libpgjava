@@ -83,6 +83,16 @@ public enum PGProperty {
       "Assume the server is at least that version"),
 
   /**
+   * AuthenticationPluginClass
+   */
+
+  AUTHENTICATION_PLUGIN_CLASS_NAME(
+      "authenticationPluginClassName",
+      null,
+      "Name of class which implements AuthenticationPlugin"
+  ),
+
+  /**
    * Specifies what the driver should do if a query fails. In {@code autosave=always} mode, JDBC driver sets a savepoint before each query,
    * and rolls back to that savepoint in case of failure. In {@code autosave=never} mode (default), no savepoint dance is made ever.
    * In {@code autosave=conservative} mode, savepoint is set for each query, however the rollback is done only for rare cases
@@ -96,7 +106,7 @@ public enum PGProperty {
           + "In autosave=conservative mode, safepoint is set for each query, however the rollback is done only for rare cases"
           + " like 'cached statement cannot change return type' or 'statement XXX is not valid' so JDBC driver rollsback and retries",
       false,
-      new String[] {"always", "never", "conservative"}),
+      new String[]{"always", "never", "conservative"}),
 
   /**
    * Use binary format for sending and receiving data if possible.
@@ -142,7 +152,7 @@ public enum PGProperty {
       "false",
       "Determine whether SAVEPOINTS used in AUTOSAVE will be released per query or not",
       false,
-      new String[] {"true", "false"}),
+      new String[]{"true", "false"}),
 
   /**
    * <p>The timeout value used for socket connect operations. If connecting to the server takes longer
@@ -153,7 +163,7 @@ public enum PGProperty {
   CONNECT_TIMEOUT(
       "connectTimeout",
       "10",
-      "The timeout value used for socket connect operations."),
+      "The timeout value in seconds used for socket connect operations."),
 
   /**
    * Specify the schema (or several schema separated by commas) to be set in the search-path. This schema will be used to resolve
@@ -211,14 +221,28 @@ public enum PGProperty {
           + "In escapeSyntaxCallMode=callIfNoReturn mode, the driver uses a CALL statement (allowing procedure invocation) if there is no return parameter specified, otherwise the driver uses a SELECT statement."
           + "In escapeSyntaxCallMode=call mode, the driver always uses a CALL statement (allowing procedure invocation only).",
       false,
-      new String[] {"select", "callIfNoReturn", "call"}),
+      new String[]{"select", "callIfNoReturn", "call"}),
+
+  /**
+   * Group startup parameters in a transaction
+   * This is important in pool-by-transaction scenarios in order to make sure that all the statements
+   * reaches the same connection that is being initialized. All of the startup parameters will be wrapped
+   * in a transaction
+   * Note this is off by default as pgbouncer in statement mode
+   */
+  GROUP_STARTUP_PARAMETERS(
+      "groupStartupParameters",
+      "false",
+      "This is important in pool-by-transaction scenarios in order to make sure that all "
+          + "the statements reaches the same connection that is being initialized."
+  ),
 
   GSS_ENC_MODE(
       "gssEncMode",
       "allow",
       "Force Encoded GSS Mode",
       false,
-      new String[] {"disable", "allow", "prefer", "require"}
+      new String[]{"disable", "allow", "prefer", "require"}
   ),
 
   /**
@@ -234,7 +258,18 @@ public enum PGProperty {
       "auto",
       "Force SSSPI or GSSAPI",
       false,
-      new String[] {"auto", "sspi", "gssapi"}),
+      new String[]{"auto", "sspi", "gssapi"}),
+
+  /**
+   * <p>After requesting an upgrade to SSL from the server there are reports of the server not responding due to a failover
+   * without a timeout here, the client can wait forever. The pattern for requesting a GSS encrypted connection is the same so we provide the same
+   * timeout mechanism This timeout will be set before the request and reset after </p>
+   */
+  GSS_RESPONSE_TIMEOUT(
+      "gssResponseTimeout",
+      "5000",
+      "Time in milliseconds we wait for a response from the server after requesting a GSS upgrade"),
+
 
   /**
    * Enable mode to filter out the names of database objects for which the current user has no privileges
@@ -255,7 +290,7 @@ public enum PGProperty {
    */
   JAAS_APPLICATION_NAME(
       "jaasApplicationName",
-      null,
+      "pgjdbc",
       "Specifies the name of the JAAS system or application login configuration."),
 
   /**
@@ -283,38 +318,35 @@ public enum PGProperty {
       "If disabled hosts are connected in the given order. If enabled hosts are chosen randomly from the set of suitable candidates"),
 
   /**
-   * <p>File name output of the Logger, if set, the Logger will use a
-   * {@link java.util.logging.FileHandler} to write to a specified file. If the parameter is not set
-   * or the file can't be created the {@link java.util.logging.ConsoleHandler} will be used instead.</p>
-   *
-   * <p>Parameter should be use together with {@link PGProperty#LOGGER_LEVEL}</p>
+   * <p>If this is set then the client side will bind to this address. This is useful if you need
+   * to choose which interface to connect to.</p>
    */
+  LOCAL_SOCKET_ADDRESS(
+      "localSocketAddress",
+      null,
+      "Local Socket address, if set bind the client side of the socket to this address"),
+
+  /**
+   * This property is no longer used by the driver and will be ignored.
+   * @deprecated Logging is configured via java.util.logging.
+   */
+  @Deprecated
   LOGGER_FILE(
       "loggerFile",
       null,
       "File name output of the Logger"),
 
   /**
-   * <p>Logger level of the driver. Allowed values: {@code OFF}, {@code DEBUG} or {@code TRACE}.</p>
-   *
-   * <p>This enable the {@link java.util.logging.Logger} of the driver based on the following mapping
-   * of levels:</p>
-   * <ul>
-   *     <li>FINE -&gt; DEBUG</li>
-   *     <li>FINEST -&gt; TRACE</li>
-   * </ul>
-   *
-   * <p><b>NOTE:</b> The recommended approach to enable java.util.logging is using a
-   * {@code logging.properties} configuration file with the property
-   * {@code -Djava.util.logging.config.file=myfile} or if your are using an application server
-   * you should use the appropriate logging subsystem.</p>
+   * This property is no longer used by the driver and will be ignored.
+   * @deprecated Logging is configured via java.util.logging.
    */
+  @Deprecated
   LOGGER_LEVEL(
       "loggerLevel",
       null,
       "Logger level of the driver",
       false,
-      new String[] {"OFF", "DEBUG", "TRACE"}),
+      new String[]{"OFF", "DEBUG", "TRACE"}),
 
   /**
    * Specify how long to wait for establishment of a database connection. The timeout is specified
@@ -323,7 +355,7 @@ public enum PGProperty {
   LOGIN_TIMEOUT(
       "loginTimeout",
       "0",
-      "Specify how long to wait for establishment of a database connection."),
+      "Specify how long in seconds to wait for establishment of a database connection."),
 
   /**
    * Whether to include full server error detail in exception messages.
@@ -383,7 +415,7 @@ public enum PGProperty {
    */
   PG_HOST(
       "PGHOST",
-      null,
+      "localhost",
       "Hostname of the PostgreSQL server (may be specified directly in the JDBC URL)",
       false),
 
@@ -392,7 +424,7 @@ public enum PGProperty {
    */
   PG_PORT(
       "PGPORT",
-      null,
+      "5432",
       "Port of the PostgreSQL server (may be specified directly in the JDBC URL)"),
 
   /**
@@ -408,7 +440,7 @@ public enum PGProperty {
       "Specifies which mode is used to execute queries to database: simple means ('Q' execute, no parse, no bind, text mode only), "
           + "extended means always use bind/execute messages, extendedForPrepared means extended for prepared statements only, "
           + "extendedCacheEverything means use extended protocol and try cache every statement (including Statement.execute(String sql)) in a query cache.", false,
-      new String[] {"extended", "extendedForPrepared", "extendedCacheEverything", "simple"}),
+      new String[]{"extended", "extendedForPrepared", "extendedCacheEverything", "simple"}),
 
   /**
    * Specifies the maximum number of entries in cache of prepared statements. A value of {@code 0}
@@ -446,7 +478,7 @@ public enum PGProperty {
       null,
       "Force use of a particular protocol version when connecting, currently only version 3 is supported.",
       false,
-      new String[] {"3"}),
+      new String[]{"3"}),
 
   /**
    * Quote returning columns.
@@ -480,7 +512,7 @@ public enum PGProperty {
           + "When 'always' setting readOnly to 'true' will set the session to READ ONLY if autoCommit is 'true' "
           + "and the transaction to BEGIN READ ONLY if autocommit is 'false'.",
       false,
-      new String[] {"ignore", "transaction", "always"}),
+      new String[]{"ignore", "transaction", "always"}),
 
   /**
    * Socket read buffer size (SO_RECVBUF). A value of {@code -1}, which is the default, means system
@@ -532,6 +564,16 @@ public enum PGProperty {
       "Socket write buffer size"),
 
   /**
+   * Service name to use for additional parameters. It specifies a service name in "pg_service
+   * .conf" that holds additional connection parameters. This allows applications to specify only
+   * a service name so connection parameters can be centrally maintained.
+   */
+  SERVICE(
+      "service",
+      null,
+      "Service name to be searched in pg_service.conf resource"),
+
+  /**
    * Socket factory used to create socket. A null value, which is the default, means system default.
    */
   SOCKET_FACTORY(
@@ -541,9 +583,7 @@ public enum PGProperty {
 
   /**
    * The String argument to give to the constructor of the Socket Factory.
-   * @deprecated use {@code ..Factory(Properties)} constructor.
    */
-  @Deprecated
   SOCKET_FACTORY_ARG(
       "socketFactoryArg",
       null,
@@ -558,7 +598,7 @@ public enum PGProperty {
   SOCKET_TIMEOUT(
       "socketTimeout",
       "0",
-      "The timeout value used for socket read operations."),
+      "The timeout value in seconds max(2147484) used for socket read operations."),
 
   /**
    * Control use of SSL: empty or {@code true} values imply {@code sslmode==verify-full}
@@ -578,11 +618,11 @@ public enum PGProperty {
       "The location of the client's SSL certificate"),
 
   /**
-   * Classname of the SSL Factory to use (instance of {@code javax.net.ssl.SSLSocketFactory}).
+   * Classname of the SSL Factory to use (instance of {@link javax.net.ssl.SSLSocketFactory}).
    */
   SSL_FACTORY(
       "sslfactory",
-      null,
+      "org.postgresql.ssl.LibPQFactory",
       "Provide a SSLSocketFactory class when using SSL."),
 
   /**
@@ -596,8 +636,7 @@ public enum PGProperty {
       "Argument forwarded to constructor of SSLSocketFactory class."),
 
   /**
-   * Classname of the SSL HostnameVerifier to use (instance of {@code
-   * javax.net.ssl.HostnameVerifier}).
+   * Classname of the SSL HostnameVerifier to use (instance of {@link javax.net.ssl.HostnameVerifier}).
    */
   SSL_HOSTNAME_VERIFIER(
       "sslhostnameverifier",
@@ -605,8 +644,8 @@ public enum PGProperty {
       "A class, implementing javax.net.ssl.HostnameVerifier that can verify the server"),
 
   /**
-   * File containing the SSL Key. Default will be the file {@code postgresql.pk8} in {@code
-   * $HOME/.postgresql} (*nix) or {@code %APPDATA%\postgresql} (windows).
+   * File containing the SSL Key. Default will be the file {@code postgresql.pk8} in {@code $HOME/.postgresql} (*nix)
+   * or {@code %APPDATA%\postgresql} (windows).
    */
   SSL_KEY(
       "sslkey",
@@ -624,7 +663,7 @@ public enum PGProperty {
       null,
       "Parameter governing the use of SSL",
       false,
-      new String[] {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}),
+      new String[]{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}),
 
   /**
    * The SSL password to use in the default CallbackHandler.
@@ -636,12 +675,21 @@ public enum PGProperty {
 
 
   /**
-   * The classname instantiating {@code javax.security.auth.callback.CallbackHandler} to use.
+   * The classname instantiating {@link javax.security.auth.callback.CallbackHandler} to use.
    */
   SSL_PASSWORD_CALLBACK(
       "sslpasswordcallback",
       null,
-      "A class, implementing javax.security.auth.callback.CallbackHandler that can handle PassworCallback for the ssl password."),
+      "A class, implementing javax.security.auth.callback.CallbackHandler that can handle PasswordCallback for the ssl password."),
+
+  /**
+   * <p>After requesting an upgrade to SSL from the server there are reports of the server not responding due to a failover
+   * without a timeout here, the client can wait forever. This timeout will be set before the request and reset after </p>
+   */
+  SSL_RESPONSE_TIMEOUT(
+      "sslResponseTimeout",
+      "5000",
+      "Time in milliseconds we wait for a response from the server after requesting SSL upgrade"),
 
   /**
    * File containing the root certificate when validating server ({@code sslmode} = {@code
@@ -671,14 +719,14 @@ public enum PGProperty {
       null,
       "The type to bind String parameters as (usually 'varchar', 'unspecified' allows implicit casting to other types)",
       false,
-      new String[] {"unspecified", "varchar"}),
+      new String[]{"unspecified", "varchar"}),
 
   TARGET_SERVER_TYPE(
       "targetServerType",
       "any",
       "Specifies what kind of server to connect",
       false,
-      new String [] {"any", "primary", "master", "slave", "secondary",  "preferSlave", "preferSecondary"}),
+      new String []{"any", "primary", "master", "slave", "secondary", "preferSlave", "preferSecondary", "preferPrimary"}),
 
   /**
    * Enable or disable TCP keep-alive. The default is {@code false}.
@@ -688,6 +736,11 @@ public enum PGProperty {
       "false",
       "Enable or disable TCP keep-alive. The default is {@code false}."),
 
+  TCP_NO_DELAY(
+      "tcpNoDelay",
+      "true",
+      "Enable or disable TCP no delay. The default is (@code true}."
+  ),
   /**
    * Specifies the length to return for types of unknown length.
    */
@@ -717,7 +770,7 @@ public enum PGProperty {
    * Factory class to instantiate factories for XML processing.
    * The default factory disables external entity processing.
    * Legacy behavior with external entity processing can be enabled by specifying a value of LEGACY_INSECURE.
-   * Or specify a custom class that implements {@code org.postgresql.xml.PGXmlFactoryFactory}.
+   * Or specify a custom class that implements {@link org.postgresql.xml.PGXmlFactoryFactory}.
    */
   XML_FACTORY_FACTORY(
       "xmlFactoryFactory",
@@ -731,7 +784,6 @@ public enum PGProperty {
   private final boolean required;
   private final String description;
   private final String /* @Nullable */ [] choices;
-  private final boolean deprecated;
 
   PGProperty(String name, /* @Nullable */ String defaultValue, String description) {
     this(name, defaultValue, description, false);
@@ -748,14 +800,10 @@ public enum PGProperty {
     this.required = required;
     this.description = description;
     this.choices = choices;
-    try {
-      this.deprecated = PGProperty.class.getField(name()).getAnnotation(Deprecated.class) != null;
-    } catch (NoSuchFieldException e) {
-      throw new RuntimeException(e);
-    }
   }
 
-  private static final Map<String, PGProperty> PROPS_BY_NAME = new HashMap<String, PGProperty>();
+  private static final Map<String, PGProperty> PROPS_BY_NAME = new HashMap<>();
+
   static {
     for (PGProperty prop : PGProperty.values()) {
       if (PROPS_BY_NAME.put(prop.getName(), prop) != null) {
@@ -811,27 +859,40 @@ public enum PGProperty {
   }
 
   /**
-   * Returns whether this connection parameter is deprecated.
-   *
-   * @return whether this connection parameter is deprecated
-   */
-  public boolean isDeprecated() {
-    return deprecated;
-  }
-
-  /**
-   * Returns the value of the connection parameters according to the given {@code Properties} or the
+   * Returns the value of the connection parameter from the given {@link Properties} or the
    * default value.
    *
    * @param properties properties to take actual value from
    * @return evaluated value for this connection parameter
    */
-  public /* @Nullable */ String get(Properties properties) {
+  public /* @Nullable */ String getOrDefault(Properties properties) {
     return properties.getProperty(name, defaultValue);
   }
 
   /**
-   * Set the value for this connection parameter in the given {@code Properties}.
+   * Returns the value of the connection parameter from the given {@link Properties} or the
+   * default value
+   * @param properties properties to take actual value from
+   * @return evaluated value for this connection parameter or null
+   * @deprecated use {@link #getOrDefault(Properties)} instead
+   */
+  @Deprecated
+  public /* @Nullable */ String get(Properties properties) {
+    return getOrDefault(properties);
+  }
+
+  /**
+   * Returns the value of the connection parameter from the given {@link Properties} or null if there
+   * is no default value
+   * @param properties properties object to get value from
+   * @return evaluated value for this connection parameter
+   */
+  public /* @Nullable */ String getOrNull(Properties properties) {
+    return properties.getProperty(name);
+  }
+
+  /**
+   * Set the value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties in which the value should be set
    * @param value value for this connection parameter
@@ -845,40 +906,40 @@ public enum PGProperty {
   }
 
   /**
-   * Return the boolean value for this connection parameter in the given {@code Properties}.
+   * Return the boolean value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties to take actual value from
    * @return evaluated value for this connection parameter converted to boolean
    */
   public boolean getBoolean(Properties properties) {
-    return Boolean.parseBoolean(get(properties));
+    return Boolean.parseBoolean(getOrDefault(properties));
   }
 
   /**
-   * Return the int value for this connection parameter in the given {@code Properties}. Prefer the
+   * Return the int value for this connection parameter in the given {@link Properties}. Prefer the
    * use of {@link #getInt(Properties)} anywhere you can throw an {@link java.sql.SQLException}.
    *
    * @param properties properties to take actual value from
    * @return evaluated value for this connection parameter converted to int
    * @throws NumberFormatException if it cannot be converted to int.
    */
-  @SuppressWarnings("nullness:argument.type.incompatible")
+  @SuppressWarnings("nullness:argument")
   public int getIntNoCheck(Properties properties) {
-    String value = get(properties);
+    String value = getOrDefault(properties);
     //noinspection ConstantConditions
     return Integer.parseInt(value);
   }
 
   /**
-   * Return the int value for this connection parameter in the given {@code Properties}.
+   * Return the int value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties to take actual value from
    * @return evaluated value for this connection parameter converted to int
    * @throws PSQLException if it cannot be converted to int.
    */
-  @SuppressWarnings("nullness:argument.type.incompatible")
+  @SuppressWarnings("nullness:argument")
   public int getInt(Properties properties) throws PSQLException {
-    String value = get(properties);
+    String value = getOrDefault(properties);
     try {
       //noinspection ConstantConditions
       return Integer.parseInt(value);
@@ -889,14 +950,14 @@ public enum PGProperty {
   }
 
   /**
-   * Return the {@code Integer} value for this connection parameter in the given {@code Properties}.
+   * Return the {@link Integer} value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties to take actual value from
    * @return evaluated value for this connection parameter converted to Integer or null
    * @throws PSQLException if unable to parse property as integer
    */
   public /* @Nullable */ Integer getInteger(Properties properties) throws PSQLException {
-    String value = get(properties);
+    String value = getOrDefault(properties);
     if (value == null) {
       return null;
     }
@@ -909,7 +970,7 @@ public enum PGProperty {
   }
 
   /**
-   * Set the boolean value for this connection parameter in the given {@code Properties}.
+   * Set the boolean value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties in which the value should be set
    * @param value boolean value for this connection parameter
@@ -919,7 +980,7 @@ public enum PGProperty {
   }
 
   /**
-   * Set the int value for this connection parameter in the given {@code Properties}.
+   * Set the int value for this connection parameter in the given {@link Properties}.
    *
    * @param properties properties in which the value should be set
    * @param value int value for this connection parameter
@@ -929,7 +990,7 @@ public enum PGProperty {
   }
 
   /**
-   * Test whether this property is present in the given {@code Properties}.
+   * Test whether this property is present in the given {@link Properties}.
    *
    * @param properties set of properties to check current in
    * @return true if the parameter is specified in the given properties
@@ -939,14 +1000,14 @@ public enum PGProperty {
   }
 
   /**
-   * Convert this connection parameter and the value read from the given {@code Properties} into a
-   * {@code DriverPropertyInfo}.
+   * Convert this connection parameter and the value read from the given {@link Properties} into a
+   * {@link DriverPropertyInfo}.
    *
    * @param properties properties to take actual value from
    * @return a DriverPropertyInfo representing this connection parameter
    */
   public DriverPropertyInfo toDriverPropertyInfo(Properties properties) {
-    DriverPropertyInfo propertyInfo = new DriverPropertyInfo(name, get(properties));
+    DriverPropertyInfo propertyInfo = new DriverPropertyInfo(name, getOrDefault(properties));
     propertyInfo.required = required;
     propertyInfo.description = description;
     propertyInfo.choices = choices;
